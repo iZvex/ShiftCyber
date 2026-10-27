@@ -77,15 +77,81 @@ class MainActivity : ComponentActivity() {
             val shifts by db.shifts().observeAll().collectAsState(initial = emptyList())
             val settings by db.settings().observe().collectAsState(initial = null)
             LaunchedEffect(shifts) {
-                val next = shifts.firstOrNull { it.endMillis > System.currentTimeMillis() }
+                val now = System.currentTimeMillis()
                 val prefs = getSharedPreferences("shift_widget", MODE_PRIVATE)
+
+                val active = shifts.firstOrNull {
+                    it.startMillis <= now && it.endMillis > now
+                }
+                val next = active ?: shifts.firstOrNull {
+                    it.startMillis > now
+                }
+                val following = shifts.firstOrNull {
+                    it.startMillis > (next?.startMillis ?: now) &&
+                        it.id != next?.id
+                }
+
+                val status = when {
+                    active != null -> active.title
+                    next != null -> next.title
+                    else -> "Нет ближайших смен"
+                }
+
+                val details = when {
+                    active != null ->
+                        "Сейчас · ${ShiftMath.timeLabel(active.startMillis)}–${ShiftMath.timeLabel(active.endMillis)}"
+                    next != null ->
+                        "${ShiftMath.dateLabel(next.startMillis)} · ${ShiftMath.timeLabel(next.startMillis)}–${ShiftMath.timeLabel(next.endMillis)}"
+                    else -> "Добавь смену в Shift Cyber"
+                }
+
+                val hours = next?.let {
+                    String.format(
+                        java.util.Locale.getDefault(),
+                        "%.1f ч",
+                        ShiftMath.hours(it)
+                    )
+                } ?: "—"
+
+                val earnings = next?.let {
+                    String.format(
+                        java.util.Locale.getDefault(),
+                        "%.0f ₽",
+                        ShiftMath.earnings(it)
+                    )
+                } ?: "— ₽"
+
+                val nextText = following?.let {
+                    "Далее: ${ShiftMath.dateLabel(it.startMillis)} · ${ShiftMath.timeLabel(it.startMillis)}"
+                } ?: if (next == null) {
+                    "Следующая смена: не запланирована"
+                } else {
+                    "Других смен пока нет"
+                }
+
                 prefs.edit()
-                    .putString("status", next?.title ?: "Нет ближайших смен")
-                    .putString("details", if (next == null) "Добавь смену в Shift Cyber" else "${ShiftMath.dateLabel(next.startMillis)} · ${ShiftMath.timeLabel(next.startMillis)}–${ShiftMath.timeLabel(next.endMillis)}")
+                    .putString("status", status)
+                    .putString("details", details)
+                    .putString("hours", hours)
+                    .putString("earnings", earnings)
+                    .putString("next", nextText)
                     .apply()
+
                 val manager = AppWidgetManager.getInstance(this@MainActivity)
-                val ids = manager.getAppWidgetIds(ComponentName(this@MainActivity, ru.shiftcyber.widget.ShiftWidgetProvider::class.java))
-                if (ids.isNotEmpty()) ru.shiftcyber.widget.ShiftWidgetProvider().onUpdate(this@MainActivity, manager, ids)
+                val ids = manager.getAppWidgetIds(
+                    ComponentName(
+                        this@MainActivity,
+                        ru.shiftcyber.widget.ShiftWidgetProvider::class.java
+                    )
+                )
+
+                if (ids.isNotEmpty()) {
+                    ru.shiftcyber.widget.ShiftWidgetProvider().onUpdate(
+                        this@MainActivity,
+                        manager,
+                        ids
+                    )
+                }
             }
             var dark by remember { mutableStateOf(true) }
             LaunchedEffect(settings) { settings?.let { dark = it.darkTheme } }
