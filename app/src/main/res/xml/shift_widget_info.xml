@@ -5,6 +5,7 @@
     android:minResizeHeight="90dp"
     android:updatePeriodMillis="1800000"
     android:initialLayout="@layout/shift_widget"
+    android:previewImage="@drawable/shift_widget_preview"
+    android:description="@string/widget_description"
     android:resizeMode="horizontal|vertical"
-    android:widgetCategory="home_screen"
-    android:description="@string/widget_description" />
+    android:widgetCategory="home_screen" />
