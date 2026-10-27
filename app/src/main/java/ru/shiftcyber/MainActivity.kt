@@ -50,6 +50,9 @@ import java.util.Calendar
 import java.util.Date
 import java.text.SimpleDateFormat
 import java.util.Locale
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+
 
 private val NeonPurple = Color(0xFFB49AFF)
 private val NeonCyan = Color(0xFF65E7F2)
@@ -374,27 +377,160 @@ private fun StatsScreen(shifts: List<ShiftEntity>) {
     }
 }
 
+
 @Composable
 private fun SettingsScreen(dark: Boolean, onToggleTheme: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal=18.dp), verticalArrangement=Arrangement.spacedBy(12.dp), contentPadding=PaddingValues(bottom=24.dp)) {
-        item { Text("Настройки", fontSize=26.sp, fontWeight=FontWeight.Bold); Text("Подстрой приложение под себя", color=MaterialTheme.colorScheme.secondary) }
-        item { NeonCard(Modifier.fillMaxWidth(), NeonPurple) {
-            Row(verticalAlignment=Alignment.CenterVertically) {
-                Icon(if (dark) Icons.Rounded.DarkMode else Icons.Rounded.LightMode, null, tint=NeonPurple, modifier=Modifier.size(30.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Тема приложения", fontWeight=FontWeight.SemiBold)
-                    Text(if (dark) "Тёмная · Cyberpunk" else "Светлая · Neon", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.6f))
+    val context = LocalContext.current
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        item {
+            Text(
+                "Настройки",
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "Подстрой приложение под себя",
+                color = MaterialTheme.colorScheme.secondary
+            )
+        }
+
+        item {
+            NeonCard(Modifier.fillMaxWidth(), NeonPurple) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (dark) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
+                        null,
+                        tint = NeonPurple,
+                        modifier = Modifier.size(30.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Тема приложения", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (dark) "Тёмная · Cyberpunk" else "Светлая · Neon",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f)
+                        )
+                    }
+                    Switch(
+                        checked = dark,
+                        onCheckedChange = { onToggleTheme() }
+                    )
                 }
-                Switch(checked=dark, onCheckedChange={onToggleTheme()})
             }
-        } }
-        item { SettingInfo(Icons.Rounded.NotificationsActive, "Уведомления", "Напоминания о сменах планируются при добавлении смены.") }
-        item { SettingInfo(Icons.Rounded.Widgets, "Виджет", "Добавь Shift Cyber через меню виджетов на главном экране. Размер можно менять удержанием.") }
-        item { SettingInfo(Icons.Rounded.Storage, "Локальные данные", "График хранится на устройстве. Резервное копирование пока не реализовано.") }
-        item { SettingInfo(Icons.Rounded.Palette, "Дизайн", "Неоновые акценты, мягкие градиенты и анимированные переходы.") }
+        }
+
+        item {
+            NeonCard(Modifier.fillMaxWidth(), NeonCyan) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.Widgets,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Виджет Shift Cyber", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Попробуй добавить график смен прямо с этой страницы.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .7f)
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            try {
+                                val manager = AppWidgetManager.getInstance(context)
+                                val provider = ComponentName(
+                                    context,
+                                    ru.shiftcyber.widget.ShiftWidgetProvider::class.java
+                                )
+
+                                if (!manager.isRequestPinAppWidgetSupported) {
+                                    Toast.makeText(
+                                        context,
+                                        "Лаунчер не поддерживает запрос добавления виджета.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    val sent = manager.requestPinAppWidget(
+                                        provider,
+                                        null,
+                                        null
+                                    )
+
+                                    Toast.makeText(
+                                        context,
+                                        if (sent) {
+                                            "Запрос передан лаунчеру. Проверь, появилось ли окно добавления."
+                                        } else {
+                                            "Лаунчер не принял запрос на добавление виджета."
+                                        },
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "Ошибка добавления: ${e.message ?: "неизвестная ошибка"}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            Icons.Rounded.Add,
+                            contentDescription = null
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Добавить виджет на экран")
+                    }
+
+                    Text(
+                        "После нажатия подтверди добавление, если HyperOS покажет системное окно.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f)
+                    )
+                }
+            }
+        }
+
+        item {
+            SettingInfo(
+                Icons.Rounded.NotificationsActive,
+                "Уведомления",
+                "Напоминания о сменах планируются при добавлении смены."
+            )
+        }
+
+        item {
+            SettingInfo(
+                Icons.Rounded.Storage,
+                "Локальные данные",
+                "График хранится на устройстве. Резервное копирование пока не реализовано."
+            )
+        }
+
+        item {
+            SettingInfo(
+                Icons.Rounded.Palette,
+                "Дизайн",
+                "Неоновые акценты, мягкие градиенты и анимированные переходы."
+            )
+        }
     }
 }
+
 
 @Composable
 private fun SettingInfo(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String) {
