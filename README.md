@@ -31,3 +31,14 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`.
 - This workflow builds a **debug APK** for personal testing, not a Play Store release.
 - GitHub Actions stores the APK artifact for 14 days; download it before expiry.
 - The project has not been compiled or tested on a physical device in the authoring environment. Runtime issues may still need fixing based on the first build logs.
+
+
+## Обновление v1.1
+- Контрастные цвета текста для светлой и тёмной темы.
+- Все суммы отображаются в рублях; конвертация валют не выполняется.
+- Перерыв убран из формы и не вычитается из отработанных часов. Существующее поле БД оставлено для совместимости.
+- Быстрые кнопки `−1 ч` и `+1 ч` в карточках смен меняют время окончания.
+- Генератор графика использует рабочие дни подряд, выходные подряд, часов за смену и горизонт планирования.
+- Виджет получает данные о ближайшей смене после открытия/обновления приложения; при первом добавлении виджета launcher может потребовать перезапуска или обновления списка виджетов.
+
+Сборка выполняется GitHub Actions. После замены файлов проверь сборку и протестируй на устройстве: Room-схема не меняется, существующие смены должны сохраниться при обновлении поверх старой версии.

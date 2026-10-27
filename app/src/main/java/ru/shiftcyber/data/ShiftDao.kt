@@ -14,6 +14,9 @@ interface ShiftDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(shift: ShiftEntity): Long
 
+    @Query("SELECT * FROM shifts WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): ShiftEntity?
+
     @Query("DELETE FROM shifts WHERE id = :id")
     suspend fun delete(id: Long)
 

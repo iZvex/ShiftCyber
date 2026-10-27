@@ -15,6 +15,7 @@
         </activity>
         <receiver
             android:name=".widget.ShiftWidgetProvider"
+            android:label="Shift Cyber — смены"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />

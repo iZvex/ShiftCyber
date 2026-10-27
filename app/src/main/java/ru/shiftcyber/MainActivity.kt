@@ -2,6 +2,9 @@ package ru.shiftcyber
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import android.widget.RemoteViews
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -70,6 +73,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             val shifts by db.shifts().observeAll().collectAsState(initial = emptyList())
             val settings by db.settings().observe().collectAsState(initial = null)
+            LaunchedEffect(shifts) {
+                val next = shifts.firstOrNull { it.endMillis > System.currentTimeMillis() }
+                val prefs = getSharedPreferences("shift_widget", MODE_PRIVATE)
+                prefs.edit()
+                    .putString("status", next?.title ?: "Нет ближайших смен")
+                    .putString("details", if (next == null) "Добавь смену в Shift Cyber" else "${ShiftMath.dateLabel(next.startMillis)} · ${ShiftMath.timeLabel(next.startMillis)}–${ShiftMath.timeLabel(next.endMillis)}")
+                    .apply()
+                val manager = AppWidgetManager.getInstance(this@MainActivity)
+                val ids = manager.getAppWidgetIds(ComponentName(this@MainActivity, ru.shiftcyber.widget.ShiftWidgetProvider::class.java))
+                if (ids.isNotEmpty()) ru.shiftcyber.widget.ShiftWidgetProvider().onUpdate(this@MainActivity, manager, ids)
+            }
             var dark by remember { mutableStateOf(true) }
             LaunchedEffect(settings) { settings?.let { dark = it.darkTheme } }
             ShiftCyberTheme(dark) {
@@ -91,6 +105,10 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onDelete = { id -> lifecycleScope.launch { db.shifts().delete(id) } },
+                    onAdjustHours = { id, delta -> lifecycleScope.launch {
+                        val shift = db.shifts().getById(id)
+                        if (shift != null) db.shifts().upsert(shift.copy(endMillis = (shift.endMillis + delta * 3_600_000L).coerceAtLeast(shift.startMillis + 60_000L)))
+                    } },
                     onGenerate = { anchor, days, cycle, startHour, rate ->
                         lifecycleScope.launch {
                             val from = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -3); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE,0); set(Calendar.SECOND,0) }.timeInMillis
@@ -125,7 +143,12 @@ private fun ShiftCyberTheme(dark: Boolean, content: @Composable () -> Unit) {
         primary = Color(0xFF7046C8), secondary = Color(0xFF087F91), tertiary = Color(0xFF168454),
         background = LightBg, surface = LightCard, onBackground = Color(0xFF191627), onSurface = Color(0xFF191627)
     )
-    MaterialTheme(colorScheme = scheme, content = content)
+    MaterialTheme(colorScheme = scheme) {
+        androidx.compose.material3.ProvideTextStyle(
+            value = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
+            content = content
+        )
+    }
 }
 
 private enum class Tab(val label: String) {
@@ -138,6 +161,7 @@ private fun ShiftCyberApp(
     onToggleTheme: () -> Unit,
     onAddShift: (Long, Long, String, Double, Int) -> Unit,
     onDelete: (Long) -> Unit,
+    onAdjustHours: (Long, Int) -> Unit,
     onGenerate: (Long, Int, List<Int>, Int, Double) -> Unit
 ) {
     var tab by remember { mutableStateOf(Tab.HOME) }
@@ -161,12 +185,14 @@ private fun ShiftCyberApp(
                     Tab.HOME -> HomeScreen(
                         shifts,
                         onAdd = { selectedDateMillis = System.currentTimeMillis(); showAdd = true },
-                        onCalendar = { tab = Tab.CALENDAR }
+                        onCalendar = { tab = Tab.CALENDAR },
+                        onAdjustHours = onAdjustHours
                     )
                     Tab.CALENDAR -> CalendarScreen(
                         shifts,
                         onAdd = { dateMillis -> selectedDateMillis = dateMillis; showAdd = true },
                         onDelete = onDelete,
+                        onAdjustHours = onAdjustHours,
                         onCycle = { showCycle = true }
                     )
                     Tab.STATS -> StatsScreen(shifts)
@@ -196,7 +222,7 @@ private fun ShiftCyberApp(
 }
 
 @Composable
-private fun HomeScreen(shifts: List<ShiftEntity>, onAdd: () -> Unit, onCalendar: () -> Unit) {
+private fun HomeScreen(shifts: List<ShiftEntity>, onAdd: () -> Unit, onCalendar: () -> Unit, onAdjustHours: (Long, Int) -> Unit) {
     val now = System.currentTimeMillis()
     val next = shifts.firstOrNull { it.endMillis > now }
     val month = Calendar.getInstance()
@@ -227,7 +253,7 @@ private fun HomeScreen(shifts: List<ShiftEntity>, onAdd: () -> Unit, onCalendar:
         }
         item {
             Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                MetricCard("ЗАРАБОТОК", String.format(Locale.getDefault(), "%.0f €", money), Icons.Rounded.AccountBalanceWallet, NeonGreen, Modifier.weight(1f))
+                MetricCard("ЗАРАБОТОК", String.format(Locale.getDefault(), "%.0f ₽", money), Icons.Rounded.AccountBalanceWallet, NeonGreen, Modifier.weight(1f))
                 MetricCard("ЧАСЫ", String.format(Locale.getDefault(), "%.1f ч", hours), Icons.Rounded.Schedule, NeonCyan, Modifier.weight(1f))
             }
         }
@@ -244,12 +270,12 @@ private fun HomeScreen(shifts: List<ShiftEntity>, onAdd: () -> Unit, onCalendar:
         item { Text("БЛИЖАЙШИЕ ВЫХОДЫ", fontSize=12.sp, fontWeight=FontWeight.Bold, letterSpacing=1.5.sp, color=MaterialTheme.colorScheme.secondary) }
         if (shifts.filter { it.endMillis > now }.take(4).isEmpty()) {
             item { Text("Пока пусто — добавь смену, чтобы начать.", color=MaterialTheme.colorScheme.onBackground.copy(alpha=.65f)) }
-        } else items(shifts.filter { it.endMillis > now }.take(4)) { shift -> ShiftRow(shift) }
+        } else items(shifts.filter { it.endMillis > now }.take(4)) { shift -> ShiftRow(shift, onAdjustHours = { delta -> onAdjustHours(shift.id, delta) }) }
     }
 }
 
 @Composable
-private fun CalendarScreen(shifts: List<ShiftEntity>, onAdd: (Long) -> Unit, onDelete: (Long) -> Unit, onCycle: () -> Unit) {
+private fun CalendarScreen(shifts: List<ShiftEntity>, onAdd: (Long) -> Unit, onDelete: (Long) -> Unit, onAdjustHours: (Long, Int) -> Unit, onCycle: () -> Unit) {
     var monthOffset by remember { mutableIntStateOf(0) }
     val month = Calendar.getInstance().apply { add(Calendar.MONTH, monthOffset) }
     val year = month.get(Calendar.YEAR); val monthIndex = month.get(Calendar.MONTH)
@@ -316,7 +342,7 @@ private fun CalendarScreen(shifts: List<ShiftEntity>, onAdd: (Long) -> Unit, onD
         Spacer(Modifier.height(12.dp))
         Text("СМЕНЫ МЕСЯЦА", fontSize=11.sp, letterSpacing=1.5.sp, color=MaterialTheme.colorScheme.secondary, fontWeight=FontWeight.Bold)
         LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp), contentPadding=PaddingValues(bottom=12.dp)) {
-            items(shifts.filter { it.startMillis in bounds.first until bounds.second }) { ShiftRow(it, onDelete = { onDelete(it.id) }) }
+            items(shifts.filter { it.startMillis in bounds.first until bounds.second }) { shift -> ShiftRow(shift, onDelete = { onDelete(shift.id) }, onAdjustHours = { delta -> onAdjustHours(shift.id, delta) }) }
         }
     }
 }
@@ -333,17 +359,17 @@ private fun StatsScreen(shifts: List<ShiftEntity>) {
     val prev = shifts.filter { it.startMillis in prevBounds.first until prevBounds.second }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal=18.dp), contentPadding=PaddingValues(bottom=20.dp), verticalArrangement=Arrangement.spacedBy(14.dp)) {
         item { Text("Статистика", fontSize=26.sp, fontWeight=FontWeight.Bold); Text("Твои цифры за месяц", color=MaterialTheme.colorScheme.secondary) }
-        item { MetricCard("ПЛАНОВЫЙ ДОХОД", String.format(Locale.getDefault(), "%.2f €", pay), Icons.Rounded.Euro, NeonGreen, Modifier.fillMaxWidth()) }
+        item { MetricCard("ПЛАНОВЫЙ ДОХОД", String.format(Locale.getDefault(), "%.2f ₽", pay), Icons.Rounded.AccountBalanceWallet, NeonGreen, Modifier.fillMaxWidth()) }
         item { Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             MetricCard("ОТРАБОТАНО", String.format(Locale.getDefault(), "%.1f ч", hours), Icons.Rounded.Schedule, NeonCyan, Modifier.weight(1f))
             MetricCard("СМЕН", "${month.size}", Icons.Rounded.EventAvailable, NeonPurple, Modifier.weight(1f))
         } }
         item { NeonCard(Modifier.fillMaxWidth(), NeonCyan) {
             Text("СРЕДНИЙ ДОХОД ЗА СМЕНУ", fontSize=11.sp, color=MaterialTheme.colorScheme.secondary, fontWeight=FontWeight.Bold)
-            Text(if (month.isEmpty()) "—" else String.format(Locale.getDefault(), "%.2f €", pay/month.size), fontSize=25.sp, fontWeight=FontWeight.Bold)
+            Text(if (month.isEmpty()) "—" else String.format(Locale.getDefault(), "%.2f ₽", pay/month.size), fontSize=25.sp, fontWeight=FontWeight.Bold)
         } }
         item { Text("СРАВНЕНИЕ С ПРОШЛЫМ МЕСЯЦЕМ", fontSize=11.sp, color=MaterialTheme.colorScheme.secondary, fontWeight=FontWeight.Bold) }
-        item { Text("${prev.size} смен · ${String.format(Locale.getDefault(), "%.1f", prev.sumOf { ShiftMath.hours(it) })} ч · ${String.format(Locale.getDefault(), "%.2f", prev.sumOf { ShiftMath.earnings(it) })} €", fontSize=16.sp) }
+        item { Text("${prev.size} смен · ${String.format(Locale.getDefault(), "%.1f", prev.sumOf { ShiftMath.hours(it) })} ч · ${String.format(Locale.getDefault(), "%.2f", prev.sumOf { ShiftMath.earnings(it) })} ₽", fontSize=16.sp) }
         item { Text("Расчёт основан на ставке каждой смены и не включает налоги, надбавки или переработки.", fontSize=12.sp, color=MaterialTheme.colorScheme.onBackground.copy(alpha=.6f)) }
     }
 }
@@ -386,17 +412,24 @@ private fun SettingInfo(icon: androidx.compose.ui.graphics.vector.ImageVector, t
 }
 
 @Composable
-private fun ShiftRow(shift: ShiftEntity, onDelete: (() -> Unit)? = null) {
+private fun ShiftRow(shift: ShiftEntity, onDelete: (() -> Unit)? = null, onAdjustHours: ((Int) -> Unit)? = null) {
     NeonCard(Modifier.fillMaxWidth(), when(shift.colorKey) { "green" -> NeonGreen; "cyan" -> NeonCyan; else -> NeonPurple }) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             Box(Modifier.width(4.dp).height(46.dp).background(NeonPurple, RoundedCornerShape(4.dp)))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(shift.title, fontWeight=FontWeight.SemiBold)
-                Text("${ShiftMath.dateLabel(shift.startMillis)} · ${ShiftMath.timeLabel(shift.startMillis)}–${ShiftMath.timeLabel(shift.endMillis)}", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.62f))
+                Text("${ShiftMath.dateLabel(shift.startMillis)} · ${ShiftMath.timeLabel(shift.startMillis)}–${ShiftMath.timeLabel(shift.endMillis)}", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.72f))
+                if (onAdjustHours != null) {
+                    Row(verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                        Text("Часы", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.65f))
+                        TextButton(onClick={ onAdjustHours(-1) }, contentPadding=PaddingValues(horizontal=5.dp, vertical=0.dp)) { Text("−1 ч") }
+                        TextButton(onClick={ onAdjustHours(1) }, contentPadding=PaddingValues(horizontal=5.dp, vertical=0.dp)) { Text("+1 ч") }
+                    }
+                }
             }
             Column(horizontalAlignment=Alignment.End) {
-                Text(String.format(Locale.getDefault(), "%.0f €", ShiftMath.earnings(shift)), color=NeonGreen, fontWeight=FontWeight.Bold)
+                Text(String.format(Locale.getDefault(), "%.0f ₽", ShiftMath.earnings(shift)), color=NeonGreen, fontWeight=FontWeight.Bold)
                 Text(String.format(Locale.getDefault(), "%.1f ч", ShiftMath.hours(shift)), fontSize=11.sp, color=MaterialTheme.colorScheme.secondary)
             }
             if (onDelete != null) IconButton(onClick=onDelete) { Icon(Icons.Rounded.DeleteOutline, null, tint=Color(0xFFFF7F9C)) }
@@ -434,7 +467,6 @@ private fun AddShiftDialog(initialDateMillis: Long, onDismiss: () -> Unit, onSav
     var start by remember { mutableStateOf("09:00") }
     var end by remember { mutableStateOf("18:00") }
     var rate by remember { mutableStateOf("15") }
-    var breakMin by remember { mutableStateOf("30") }
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest=onDismiss,
@@ -447,10 +479,7 @@ private fun AddShiftDialog(initialDateMillis: Long, onDismiss: () -> Unit, onSav
                     OutlinedTextField(start,{start=it},label={Text("Начало")}, modifier=Modifier.weight(1f),singleLine=true)
                     OutlinedTextField(end,{end=it},label={Text("Конец")}, modifier=Modifier.weight(1f),singleLine=true)
                 }
-                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(rate,{rate=it},label={Text("€/час")}, modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
-                    OutlinedTextField(breakMin,{breakMin=it},label={Text("Перерыв, мин")}, modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                }
+                OutlinedTextField(rate,{rate=it},label={Text("Ставка ₽/час")}, modifier=Modifier.fillMaxWidth(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
                 if (error != null) Text(error!!, color=MaterialTheme.colorScheme.error, fontSize=12.sp)
             }
         },
@@ -467,7 +496,7 @@ private fun AddShiftDialog(initialDateMillis: Long, onDismiss: () -> Unit, onSav
                 val b=Calendar.getInstance().apply { time=d; set(Calendar.HOUR_OF_DAY,eh); set(Calendar.MINUTE,em); set(Calendar.SECOND,0); set(Calendar.MILLISECOND,0); if (timeInMillis <= a.timeInMillis) add(Calendar.DAY_OF_MONTH,1) }
                 val r=rate.replace(",",".").toDouble()
                 require(r >= 0)
-                onSave(a.timeInMillis,b.timeInMillis,title.ifBlank{"Рабочая смена"},r,breakMin.toIntOrNull()?.coerceAtLeast(0) ?: 0)
+                onSave(a.timeInMillis,b.timeInMillis,title.ifBlank{"Рабочая смена"},r,0)
             } catch (e: Exception) { error="Проверь дату, время и ставку." }
         }) { Text("Сохранить") } },
         dismissButton={ TextButton(onClick=onDismiss){Text("Отмена")} }
@@ -477,7 +506,9 @@ private fun AddShiftDialog(initialDateMillis: Long, onDismiss: () -> Unit, onSav
 @Composable
 private fun CycleDialog(onDismiss: () -> Unit, onGenerate: (Long,Int,List<Int>,Int,Double)->Unit) {
     var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
-    var cycle by remember { mutableStateOf("12,12,0,0") }
+    var workDays by remember { mutableStateOf("4") }
+    var restDays by remember { mutableStateOf("2") }
+    var shiftHours by remember { mutableStateOf("12") }
     var days by remember { mutableStateOf("90") }
     var startHour by remember { mutableStateOf("9") }
     var rate by remember { mutableStateOf("15") }
@@ -487,13 +518,19 @@ private fun CycleDialog(onDismiss: () -> Unit, onGenerate: (Long,Int,List<Int>,I
         title={Text("Повторяющийся график")},
         text={
             Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                Text("Укажи длительность каждой даты цикла в часах. 0 — выходной.", fontSize=12.sp, color=MaterialTheme.colorScheme.secondary)
-                OutlinedTextField(date,{date=it},label={Text("Дата начала (ГГГГ-ММ-ДД")},singleLine=true)
-                OutlinedTextField(cycle,{cycle=it},label={Text("Цикл, часы через запятую")},singleLine=true)
-                OutlinedTextField(days,{days=it},label={Text("Генерировать на дней")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+                Text("Выбери количество рабочих дней и выходных подряд. График повторится автоматически.", fontSize=12.sp, color=MaterialTheme.colorScheme.secondary)
+                OutlinedTextField(date,{date=it},label={Text("Дата начала (ГГГГ-ММ-ДД)")},singleLine=true)
                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(startHour,{startHour=it},label={Text("Начало, час")},modifier=Modifier.weight(1f),singleLine=true)
-                    OutlinedTextField(rate,{rate=it},label={Text("Ставка €/ч")},modifier=Modifier.weight(1f),singleLine=true)
+                    OutlinedTextField(workDays,{workDays=it},label={Text("Рабочих дней")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+                    OutlinedTextField(restDays,{restDays=it},label={Text("Выходных")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+                }
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(shiftHours,{shiftHours=it},label={Text("Часов за смену")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+                    OutlinedTextField(days,{days=it},label={Text("Дней вперёд")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+                }
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(startHour,{startHour=it},label={Text("Начало, час")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+                    OutlinedTextField(rate,{rate=it},label={Text("Ставка ₽/ч")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
                 }
                 if (error != null) Text(error!!, color=MaterialTheme.colorScheme.error, fontSize=12.sp)
             }
@@ -501,8 +538,10 @@ private fun CycleDialog(onDismiss: () -> Unit, onGenerate: (Long,Int,List<Int>,I
         confirmButton={Button(onClick={
             try {
                 val anchor=SimpleDateFormat("yyyy-MM-dd",Locale.US).apply { isLenient=false }.parse(date)!!.time
-                val pattern=cycle.split(",").map { it.trim().toInt() }
-                require(pattern.isNotEmpty() && pattern.all { it in 0..24 })
+                val work=workDays.toInt().coerceIn(1,30)
+                val rest=restDays.toInt().coerceIn(1,30)
+                val hours=shiftHours.toInt().coerceIn(1,24)
+                val pattern=List(work) { hours } + List(rest) { 0 }
                 val n=days.toInt().coerceIn(1,730)
                 val h=startHour.toInt().coerceIn(0,23)
                 val r=rate.replace(",",".").toDouble()

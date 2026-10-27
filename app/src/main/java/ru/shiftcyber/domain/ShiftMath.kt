@@ -5,9 +5,9 @@ import java.util.Calendar
 import java.util.Date
 
 object ShiftMath {
+    // Shift duration is calculated without unpaid-break deductions.
     fun hours(shift: ShiftEntity): Double =
-        ((shift.endMillis - shift.startMillis).coerceAtLeast(0L) / 3_600_000.0 -
-            shift.breakMinutes.coerceAtLeast(0) / 60.0).coerceAtLeast(0.0)
+        (shift.endMillis - shift.startMillis).coerceAtLeast(0L) / 3_600_000.0
 
     fun earnings(shift: ShiftEntity): Double = hours(shift) * shift.hourlyRate
 
