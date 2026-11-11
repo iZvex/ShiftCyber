@@ -175,24 +175,23 @@ fun ShiftEditorDialog(
         draftExtraPreview
     ) {
         val d = parseIsoDate(dateText) ?: return@remember null
-        val st = parseStrictTime(startText) ?: return@remember null
-        val et = parseStrictTime(endText) ?: return@remember null
-        if (st == et) return@remember null
-        val startMillis = d.atTime(st).atZone(zoneId).toInstant().toEpochMilli()
-        val endDate = if (et.isAfter(st)) d else d.plusDays(1)
-        val endMillis = endDate.atTime(et).atZone(zoneId).toInstant().toEpochMilli()
-
         if (payType == ShiftPayType.DAILY) {
             val baseDay = parseNonNegativeDouble(dayRateText) ?: return@remember null
             val allExtras = extraItems.toList() + listOfNotNull(draftExtraPreview)
             val extrasSum = allExtras.sumOf { it.total }
             val total = baseDay + extrasSum
             if (extrasSum > 0.0) {
-                "Дневная: ${ShiftMath.formatCurrency(baseDay)} + доп. ${ShiftMath.formatCurrency(extrasSum)} = ${ShiftMath.formatCurrency(total)}"
+                "Дневная (1 день): ${ShiftMath.formatCurrency(baseDay)} + доп. ${ShiftMath.formatCurrency(extrasSum)} = ${ShiftMath.formatCurrency(total)}"
             } else {
                 "Дневная смена (1 день): ${ShiftMath.formatCurrency(total)}"
             }
         } else {
+            val st = parseStrictTime(startText) ?: return@remember null
+            val et = parseStrictTime(endText) ?: return@remember null
+            if (st == et) return@remember null
+            val startMillis = d.atTime(st).atZone(zoneId).toInstant().toEpochMilli()
+            val endDate = if (et.isAfter(st)) d else d.plusDays(1)
+            val endMillis = endDate.atTime(et).atZone(zoneId).toInstant().toEpochMilli()
             val hr = parseNonNegativeDouble(hourlyRateText) ?: return@remember null
             val temp = ShiftEntity(startMillis = startMillis, endMillis = endMillis, hourlyRate = hr)
             val nightLabel = if (endDate != d && et != LocalTime.MIDNIGHT) "Ночная (+1 дн.) · " else ""
@@ -261,24 +260,24 @@ fun ShiftEditorDialog(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = startText,
-                        onValueChange = { startText = it; error = null },
-                        label = { Text("Начало (ЧЧ:ММ)") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = endText,
-                        onValueChange = { endText = it; error = null },
-                        label = { Text("Окончание (ЧЧ:ММ)") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                }
-
                 if (payType == ShiftPayType.HOURLY) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = startText,
+                            onValueChange = { startText = it; error = null },
+                            label = { Text("Начало (ЧЧ:ММ)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = endText,
+                            onValueChange = { endText = it; error = null },
+                            label = { Text("Окончание (ЧЧ:ММ)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                    }
+
                     OutlinedTextField(
                         value = hourlyRateText,
                         onValueChange = { hourlyRateText = it; error = null },
@@ -486,24 +485,6 @@ fun ShiftEditorDialog(
                         error = "Укажи дату в формате ГГГГ-ММ-ДД (например, 2026-11-15)."
                         return@Button
                     }
-                    val parsedStart = parseStrictTime(startText)
-                    val parsedEnd = parseStrictTime(endText)
-                    if (parsedStart == null || parsedEnd == null) {
-                        error = "Укажи время от 00:00 до 23:59 (например, 09:00 и 21:00)."
-                        return@Button
-                    }
-                    if (parsedStart == parsedEnd) {
-                        error = "Время начала и окончания не должны совпадать."
-                        return@Button
-                    }
-
-                    val startMillis = parsedDate.atTime(parsedStart).atZone(zoneId).toInstant().toEpochMilli()
-                    val endDate = if (parsedEnd.isAfter(parsedStart)) parsedDate else parsedDate.plusDays(1)
-                    val endMillis = endDate.atTime(parsedEnd).atZone(zoneId).toInstant().toEpochMilli()
-                    if (endMillis - startMillis < ShiftMath.MIN_DURATION_MILLIS) {
-                        error = "Минимальная длительность смены — 15 минут."
-                        return@Button
-                    }
 
                     if (payType == ShiftPayType.DAILY) {
                         val parsedDayRate = parseNonNegativeDouble(dayRateText)
@@ -530,11 +511,14 @@ fun ShiftEditorDialog(
                             )
                         }
 
+                        val dayStartMillis = parsedDate.atTime(9, 0).atZone(zoneId).toInstant().toEpochMilli()
+                        val dayEndMillis = parsedDate.atTime(21, 0).atZone(zoneId).toInstant().toEpochMilli()
+
                         onSave(
                             ShiftEntity(
                                 id = editingShift?.id ?: 0L,
-                                startMillis = startMillis,
-                                endMillis = endMillis,
+                                startMillis = dayStartMillis,
+                                endMillis = dayEndMillis,
                                 title = title.trim().ifBlank { "Дневная смена" },
                                 hourlyRate = editingShift?.hourlyRate ?: defaultHourlyRate,
                                 breakMinutes = editingShift?.breakMinutes ?: 0,
@@ -546,6 +530,25 @@ fun ShiftEditorDialog(
                             )
                         )
                     } else {
+                        val parsedStart = parseStrictTime(startText)
+                        val parsedEnd = parseStrictTime(endText)
+                        if (parsedStart == null || parsedEnd == null) {
+                            error = "Укажи время от 00:00 до 23:59 (например, 09:00 и 21:00)."
+                            return@Button
+                        }
+                        if (parsedStart == parsedEnd) {
+                            error = "Время начала и окончания не должны совпадать."
+                            return@Button
+                        }
+
+                        val startMillis = parsedDate.atTime(parsedStart).atZone(zoneId).toInstant().toEpochMilli()
+                        val endDate = if (parsedEnd.isAfter(parsedStart)) parsedDate else parsedDate.plusDays(1)
+                        val endMillis = endDate.atTime(parsedEnd).atZone(zoneId).toInstant().toEpochMilli()
+                        if (endMillis - startMillis < ShiftMath.MIN_DURATION_MILLIS) {
+                            error = "Минимальная длительность смены — 15 минут."
+                            return@Button
+                        }
+
                         val parsedHourly = parseNonNegativeDouble(hourlyRateText)
                         if (parsedHourly == null) {
                             error = "Укажи корректную почасовую ставку в рублях (0 или больше)."
@@ -678,34 +681,34 @@ fun CycleGeneratorDialog(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = shiftHoursText,
-                        onValueChange = { shiftHoursText = it; error = null; pendingManualConfirmCount = null },
-                        label = { Text("Часов за смену") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                    OutlinedTextField(
-                        value = daysForwardText,
-                        onValueChange = { daysForwardText = it; error = null; pendingManualConfirmCount = null },
-                        label = { Text("Дней периода") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                }
+                if (payType == ShiftPayType.HOURLY) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = shiftHoursText,
+                            onValueChange = { shiftHoursText = it; error = null; pendingManualConfirmCount = null },
+                            label = { Text("Часов за смену") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        OutlinedTextField(
+                            value = daysForwardText,
+                            onValueChange = { daysForwardText = it; error = null; pendingManualConfirmCount = null },
+                            label = { Text("Дней периода") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                    }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = startTimeText,
-                        onValueChange = { startTimeText = it; error = null; pendingManualConfirmCount = null },
-                        label = { Text("Начало (ЧЧ:ММ)") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                    if (payType == ShiftPayType.HOURLY) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = startTimeText,
+                            onValueChange = { startTimeText = it; error = null; pendingManualConfirmCount = null },
+                            label = { Text("Начало (ЧЧ:ММ)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
                         OutlinedTextField(
                             value = hourlyRateText,
                             onValueChange = { hourlyRateText = it; error = null; pendingManualConfirmCount = null },
@@ -714,7 +717,17 @@ fun CycleGeneratorDialog(
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                         )
-                    } else {
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = daysForwardText,
+                            onValueChange = { daysForwardText = it; error = null; pendingManualConfirmCount = null },
+                            label = { Text("Дней периода") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
                         OutlinedTextField(
                             value = dayRateText,
                             onValueChange = { dayRateText = it; error = null; pendingManualConfirmCount = null },
@@ -784,7 +797,11 @@ fun CycleGeneratorDialog(
                         error = "Рабочие и выходные дни должны быть от 1 до 60."
                         return@Button
                     }
-                    val shiftHours = shiftHoursText.trim().toIntOrNull()
+                    val shiftHours = if (payType == ShiftPayType.HOURLY) {
+                        shiftHoursText.trim().toIntOrNull()
+                    } else {
+                        12
+                    }
                     if (shiftHours == null || shiftHours !in 1..24) {
                         error = "Длительность смены должна быть от 1 до 24 часов."
                         return@Button
@@ -794,7 +811,11 @@ fun CycleGeneratorDialog(
                         error = "Период генерации должен быть от 1 до 730 дней."
                         return@Button
                     }
-                    val startTime = parseStrictTime(startTimeText)
+                    val startTime = if (payType == ShiftPayType.HOURLY) {
+                        parseStrictTime(startTimeText)
+                    } else {
+                        LocalTime.of(9, 0)
+                    }
                     if (startTime == null) {
                         error = "Укажи время начала смены (например, 09:00 или 20:00)."
                         return@Button

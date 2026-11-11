@@ -35,10 +35,15 @@ object ShiftMath {
     )
 
     /**
-     * Длительность смены в часах без вычета перерывов и без промежуточного округления.
+     * Длительность почасовой смены в часах без вычета перерывов и без промежуточного округления.
+     * Для простой дневной смены почасовой учёт не ведётся (0 ч, смена учитывается как 1 день).
      */
     fun hours(shift: ShiftEntity): Double =
-        (shift.endMillis - shift.startMillis).coerceAtLeast(0L).toDouble() / MILLIS_PER_HOUR
+        if (shift.isDaily) {
+            0.0
+        } else {
+            (shift.endMillis - shift.startMillis).coerceAtLeast(0L).toDouble() / MILLIS_PER_HOUR
+        }
 
     fun extraItems(shift: ShiftEntity): List<ShiftExtraItem> =
         if (shift.isDaily) ShiftJsonCodec.decodeExtras(shift.extrasJson) else emptyList()
@@ -67,7 +72,7 @@ object ShiftMath {
 
     fun hoursInPeriod(shift: ShiftEntity, fromMillis: Long, toMillis: Long): Double =
         if (shift.isDaily) {
-            if (shift.startMillis in fromMillis until toMillis) hours(shift) else 0.0
+            0.0
         } else {
             overlapMillis(shift, fromMillis, toMillis).toDouble() / MILLIS_PER_HOUR
         }
@@ -204,6 +209,7 @@ object ShiftMath {
         Instant.ofEpochMilli(millis).atZone(zoneId).format(timeFormatter)
 
     fun timeRangeLabel(shift: ShiftEntity, zoneId: ZoneId = ZoneId.systemDefault()): String {
+        if (shift.isDaily) return "1 день"
         val startText = timeLabel(shift.startMillis, zoneId)
         val endZdt = Instant.ofEpochMilli(shift.endMillis).atZone(zoneId)
         val endText = endZdt.format(timeFormatter)
