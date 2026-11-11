@@ -3,6 +3,7 @@
 package ru.shiftcyber.sync
 
 import android.accounts.Account
+import android.annotation.SuppressLint
 import android.app.backup.BackupManager
 import android.content.Context
 import android.content.Intent
@@ -142,6 +143,7 @@ object GoogleDriveSyncManager {
             }
         }
 
+    @SuppressLint("PackageManagerGetSignatures")
     fun getAppSigningSha1(context: Context): String = runCatching {
         val pm = context.packageManager
         val certBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

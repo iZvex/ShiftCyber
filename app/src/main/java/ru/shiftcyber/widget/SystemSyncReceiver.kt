@@ -18,8 +18,7 @@ class SystemSyncReceiver : BroadcastReceiver() {
         if (action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED ||
             action == Intent.ACTION_TIMEZONE_CHANGED ||
-            action == Intent.ACTION_TIME_CHANGED ||
-            action == Intent.ACTION_DATE_CHANGED
+            action == Intent.ACTION_TIME_CHANGED
         ) {
             val pendingResult = goAsync()
             CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {

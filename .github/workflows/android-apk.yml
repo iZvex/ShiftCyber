@@ -85,7 +85,13 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Run unit tests and build signed Release APK
-        run: gradle --no-daemon testReleaseUnitTest assembleRelease
+        run: |
+          set -o pipefail
+          if ! gradle --no-daemon testReleaseUnitTest assembleRelease 2>&1 | tee /tmp/gradle-build.log; then
+            DETAILS=$(grep -E "(^e: |Error:|FAILURE:|FAILED|> Task|Exception|at ru\.shiftcyber)" /tmp/gradle-build.log | tail -n 30 | tr '\n' ' ')
+            echo "::error title=GradleBuildError::${DETAILS}"
+            exit 1
+          fi
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
