@@ -1,0 +1,27 @@
+# Gradle & build outputs
+.gradle/
+build/
+app/build/
+*/build/
+
+# Local & IDE configuration
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Built binaries & backups
+*.apk
+*.aab
+*.ap_
+*.dex
+*.bak
+*~
+
+# Signing & secrets
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+.env
+.env.*

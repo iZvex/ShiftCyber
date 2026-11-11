@@ -2,755 +2,473 @@ package ru.shiftcyber
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.appwidget.AppWidgetManager
-import android.content.ComponentName
-import android.widget.RemoteViews
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.QueryStats
+import androidx.compose.material.icons.rounded.SpaceDashboard
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import ru.shiftcyber.data.*
+import kotlinx.coroutines.withContext
+import ru.shiftcyber.data.AppSettings
+import ru.shiftcyber.data.ShiftDatabase
+import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.domain.CycleGenerator
 import ru.shiftcyber.domain.ShiftMath
 import ru.shiftcyber.notifications.ReminderScheduler
-import java.util.Calendar
-import java.util.Date
-import java.text.SimpleDateFormat
-import java.util.Locale
-import android.widget.Toast
-import androidx.compose.ui.platform.LocalContext
-
-
-private val NeonPurple = Color(0xFFB49AFF)
-private val NeonCyan = Color(0xFF65E7F2)
-private val NeonGreen = Color(0xFF72F0B2)
-private val DarkBg = Color(0xFF0B0D16)
-private val DarkCard = Color(0xFF171A29)
-private val LightBg = Color(0xFFF4F3FA)
-private val LightCard = Color(0xFFFFFFFF)
+import ru.shiftcyber.ui.CalendarScreen
+import ru.shiftcyber.ui.CycleGenerationRequest
+import ru.shiftcyber.ui.CycleGeneratorDialog
+import ru.shiftcyber.ui.HomeScreen
+import ru.shiftcyber.ui.LocalCyberPalette
+import ru.shiftcyber.ui.SettingsScreen
+import ru.shiftcyber.ui.ShiftCyberTheme
+import ru.shiftcyber.ui.ShiftEditorDialog
+import ru.shiftcyber.ui.StatsScreen
+import ru.shiftcyber.widget.WidgetUpdater
+import java.time.LocalDate
+import java.time.ZoneId
 
 class MainActivity : ComponentActivity() {
     private lateinit var db: ShiftDatabase
-    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private val askNotifications = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = ShiftDatabase.get(this)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        requestNotificationsIfNeeded()
+
         setContent {
             val shifts by db.shifts().observeAll().collectAsState(initial = emptyList())
-            val settings by db.settings().observe().collectAsState(initial = null)
-            LaunchedEffect(shifts) {
-                val now = System.currentTimeMillis()
-                val prefs = getSharedPreferences("shift_widget", MODE_PRIVATE)
+            val storedSettings by db.settings().observe().collectAsState(initial = null)
+            val activeSettings = storedSettings ?: AppSettings()
 
-                val active = shifts.firstOrNull {
-                    it.startMillis <= now && it.endMillis > now
-                }
-                val next = active ?: shifts.firstOrNull {
-                    it.startMillis > now
-                }
-                val following = shifts.firstOrNull {
-                    it.startMillis > (next?.startMillis ?: now) &&
-                        it.id != next?.id
-                }
-
-                val status = when {
-                    active != null -> active.title
-                    next != null -> next.title
-                    else -> "Нет ближайших смен"
-                }
-
-                val details = when {
-                    active != null ->
-                        "Сейчас · ${ShiftMath.timeLabel(active.startMillis)}–${ShiftMath.timeLabel(active.endMillis)}"
-                    next != null ->
-                        "${ShiftMath.dateLabel(next.startMillis)} · ${ShiftMath.timeLabel(next.startMillis)}–${ShiftMath.timeLabel(next.endMillis)}"
-                    else -> "Добавь смену в Shift Cyber"
-                }
-
-                val hours = next?.let {
-                    String.format(
-                        java.util.Locale.getDefault(),
-                        "%.1f ч",
-                        ShiftMath.hours(it)
-                    )
-                } ?: "—"
-
-                val earnings = next?.let {
-                    String.format(
-                        java.util.Locale.getDefault(),
-                        "%.0f ₽",
-                        ShiftMath.earnings(it)
-                    )
-                } ?: "— ₽"
-
-                val nextText = following?.let {
-                    "Далее: ${ShiftMath.dateLabel(it.startMillis)} · ${ShiftMath.timeLabel(it.startMillis)}"
-                } ?: if (next == null) {
-                    "Следующая смена: не запланирована"
-                } else {
-                    "Других смен пока нет"
-                }
-
-                prefs.edit()
-                    .putString("status", status)
-                    .putString("details", details)
-                    .putString("hours", hours)
-                    .putString("earnings", earnings)
-                    .putString("next", nextText)
-                    .apply()
-
-                val manager = AppWidgetManager.getInstance(this@MainActivity)
-                val ids = manager.getAppWidgetIds(
-                    ComponentName(
-                        this@MainActivity,
-                        ru.shiftcyber.widget.ShiftWidgetProvider::class.java
-                    )
-                )
-
-                if (ids.isNotEmpty()) {
-                    ru.shiftcyber.widget.ShiftWidgetProvider().onUpdate(
-                        this@MainActivity,
-                        manager,
-                        ids
+            LaunchedEffect(shifts, storedSettings) {
+                withContext(Dispatchers.IO) {
+                    WidgetUpdater.refreshWithSnapshot(
+                        context = this@MainActivity,
+                        shifts = shifts,
+                        settings = activeSettings
                     )
                 }
             }
-            var dark by remember { mutableStateOf(true) }
-            LaunchedEffect(settings) { settings?.let { dark = it.darkTheme } }
-            ShiftCyberTheme(dark) {
+
+            ShiftCyberTheme(dark = activeSettings.darkTheme) {
                 ShiftCyberApp(
                     shifts = shifts,
-                    dark = dark,
-                    onToggleTheme = {
-                        dark = !dark
-                        lifecycleScope.launch { db.settings().save((settings ?: AppSettings()).copy(darkTheme = dark)) }
-                    },
-                    onAddShift = { start, end, title, rate, breakMin ->
-                        lifecycleScope.launch {
-                            val id = db.shifts().upsert(ShiftEntity(
-                                startMillis = start, endMillis = end, title = title,
-                                hourlyRate = rate, breakMinutes = breakMin, isManual = true
-                            ))
-                            val s = settings ?: AppSettings(hourlyRate = rate)
-                            ReminderScheduler.schedule(this@MainActivity, id, title, start, s.notifyDayBefore, s.notifySameDay)
+                    settings = activeSettings,
+                    onSaveShift = { shift ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val currentSettings = db.settings().getOnce() ?: activeSettings
+                            val insertedId = db.shifts().upsert(shift)
+                            val finalId = if (shift.id != 0L) shift.id else insertedId
+                            ReminderScheduler.schedule(
+                                context = applicationContext,
+                                id = finalId,
+                                title = shift.title,
+                                startMillis = shift.startMillis,
+                                dayBefore = currentSettings.notifyDayBefore,
+                                sameDay = currentSettings.notifySameDay
+                            )
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
                         }
                     },
-                    onDelete = { id -> lifecycleScope.launch { db.shifts().delete(id) } },
-                    onAdjustHours = { id, delta -> lifecycleScope.launch {
-                        val shift = db.shifts().getById(id)
-                        if (shift != null) db.shifts().upsert(shift.copy(endMillis = (shift.endMillis + delta * 3_600_000L).coerceAtLeast(shift.startMillis + 60_000L)))
-                    } },
-                    onGenerate = { anchor, days, cycle, startHour, rate ->
-                        lifecycleScope.launch {
-                            val from = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -3); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE,0); set(Calendar.SECOND,0) }.timeInMillis
-                            val to = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, days); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE,0); set(Calendar.SECOND,0) }.timeInMillis
-                            val generated = ru.shiftcyber.domain.CycleGenerator.generate(anchor, from, to, cycle, startHour, rate)
-                            val saved = mutableListOf<Pair<Long, ShiftEntity>>()
+                    onDeleteShift = { id ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            db.shifts().delete(id)
+                            ReminderScheduler.cancel(applicationContext, id)
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
+                        }
+                    },
+                    onAdjustHours = { id, delta ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val existing = db.shifts().getById(id) ?: return@launch
+                            val adjusted = ShiftMath.adjustDurationHours(existing, delta)
+                                ?.copy(isManual = true)
+                                ?: return@launch
+                            db.shifts().upsert(adjusted)
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
+                        }
+                    },
+                    onGenerateCycle = { request ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val zoneId = ZoneId.systemDefault()
+                            val currentSettings = db.settings().getOnce() ?: activeSettings
+                            val candidates = CycleGenerator.generateWorkRestCycle(
+                                anchorDate = request.anchorDate,
+                                daysForward = request.daysForward,
+                                workDays = request.workDays,
+                                restDays = request.restDays,
+                                shiftDurationHours = request.shiftDurationHours,
+                                startHour = request.startHour,
+                                startMinute = request.startMinute,
+                                hourlyRate = request.hourlyRate,
+                                title = request.title,
+                                colorKey = request.colorKey,
+                                zoneId = zoneId
+                            )
+                            val windowStart = request.anchorDate.atStartOfDay(zoneId).toInstant().toEpochMilli()
+                            val windowEnd = request.anchorDate
+                                .plusDays(request.daysForward.toLong())
+                                .atStartOfDay(zoneId)
+                                .toInstant()
+                                .toEpochMilli()
+
+                            val savedShifts = mutableListOf<ShiftEntity>()
+                            lateinit var plan: CycleGenerator.CycleMergePlan
+
                             db.withTransaction {
-                                generated.forEach { shift ->
-                                    val insertedId = db.shifts().upsert(shift)
-                                    saved += insertedId to shift.copy(id = insertedId)
+                                val existingAll = db.shifts().getAll()
+                                plan = CycleGenerator.resolveConflicts(
+                                    candidates = candidates,
+                                    existingShifts = existingAll,
+                                    windowStartMillis = windowStart,
+                                    windowEndMillis = windowEnd,
+                                    replaceAutoInWindow = request.replaceAutoInWindow,
+                                    manualPolicy = request.manualPolicy,
+                                    zoneId = zoneId
+                                )
+                                if (plan.toDeleteIds.isNotEmpty()) {
+                                    db.shifts().deleteByIds(plan.toDeleteIds)
+                                }
+                                plan.toInsert.forEach { shift ->
+                                    val newId = db.shifts().upsert(shift)
+                                    savedShifts += shift.copy(id = newId)
                                 }
                             }
-                            saved.forEach { (insertedId, shift) ->
+
+                            if (plan.toDeleteIds.isNotEmpty()) {
+                                ReminderScheduler.cancelMany(applicationContext, plan.toDeleteIds)
+                            }
+                            savedShifts.forEach { shift ->
                                 ReminderScheduler.schedule(
-                                    this@MainActivity, insertedId, shift.title, shift.startMillis, true, true
+                                    context = applicationContext,
+                                    id = shift.id,
+                                    title = shift.title,
+                                    startMillis = shift.startMillis,
+                                    dayBefore = currentSettings.notifyDayBefore,
+                                    sameDay = currentSettings.notifySameDay
                                 )
                             }
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
+
+                            val summary = buildString {
+                                append("Создано: ${savedShifts.size}")
+                                if (plan.keptIdenticalCount > 0) {
+                                    append(", уже было: ${plan.keptIdenticalCount}")
+                                }
+                                if (plan.skippedManualCount > 0) {
+                                    append(", сохранено ручных: ${plan.skippedManualCount}")
+                                }
+                            }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(this@MainActivity, summary, Toast.LENGTH_LONG).show()
+                            }
                         }
+                    },
+                    onUpdateSettings = { updated ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val previous = db.settings().getOnce() ?: activeSettings
+                            db.settings().save(updated)
+                            if (previous.notifyDayBefore != updated.notifyDayBefore ||
+                                previous.notifySameDay != updated.notifySameDay
+                            ) {
+                                val allShifts = db.shifts().getAll()
+                                ReminderScheduler.rescheduleAll(applicationContext, allShifts, updated)
+                            }
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
+                        }
+                    },
+                    onApplyRateToFutureShifts = { newRate ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val now = System.currentTimeMillis()
+                            db.withTransaction {
+                                val futureShifts = db.shifts().getAll().filter { it.startMillis > now }
+                                if (futureShifts.isNotEmpty()) {
+                                    db.shifts().upsertAll(futureShifts.map { it.copy(hourlyRate = newRate) })
+                                }
+                            }
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
+                        }
+                    },
+                    onRefreshWidgetNow = {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            WidgetUpdater.refreshFromDatabase(applicationContext)
+                        }
+                    },
+                    onRequestNotificationPermission = {
+                        requestNotificationsIfNeeded(force = true)
                     }
                 )
             }
         }
     }
-}
 
-@Composable
-private fun ShiftCyberTheme(dark: Boolean, content: @Composable () -> Unit) {
-    val scheme = if (dark) darkColorScheme(
-        primary = NeonPurple, secondary = NeonCyan, tertiary = NeonGreen,
-        background = DarkBg, surface = DarkCard, onBackground = Color(0xFFF6F3FF), onSurface = Color(0xFFF6F3FF)
-    ) else lightColorScheme(
-        primary = Color(0xFF7046C8), secondary = Color(0xFF087F91), tertiary = Color(0xFF168454),
-        background = LightBg, surface = LightCard, onBackground = Color(0xFF191627), onSurface = Color(0xFF191627)
-    )
-    MaterialTheme(colorScheme = scheme) {
-        androidx.compose.material3.ProvideTextStyle(
-            value = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
-            content = content
-        )
+    private fun requestNotificationsIfNeeded(force: Boolean = false) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted || force) {
+                askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 }
 
 private enum class Tab(val label: String) {
-    HOME("Главная"), CALENDAR("Календарь"), STATS("Статистика"), SETTINGS("Настройки")
+    HOME("Главная"),
+    CALENDAR("Календарь"),
+    STATS("Статистика"),
+    SETTINGS("Настройки")
 }
 
 @Composable
 private fun ShiftCyberApp(
-    shifts: List<ShiftEntity>, dark: Boolean,
-    onToggleTheme: () -> Unit,
-    onAddShift: (Long, Long, String, Double, Int) -> Unit,
-    onDelete: (Long) -> Unit,
+    shifts: List<ShiftEntity>,
+    settings: AppSettings,
+    onSaveShift: (ShiftEntity) -> Unit,
+    onDeleteShift: (Long) -> Unit,
     onAdjustHours: (Long, Int) -> Unit,
-    onGenerate: (Long, Int, List<Int>, Int, Double) -> Unit
+    onGenerateCycle: (CycleGenerationRequest) -> Unit,
+    onUpdateSettings: (AppSettings) -> Unit,
+    onApplyRateToFutureShifts: (Double) -> Unit,
+    onRefreshWidgetNow: () -> Unit,
+    onRequestNotificationPermission: () -> Unit
 ) {
-    var tab by remember { mutableStateOf(Tab.HOME) }
-    var showAdd by remember { mutableStateOf(false) }
-    var selectedDateMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var showCycle by remember { mutableStateOf(false) }
+    val palette = LocalCyberPalette.current
+    val zoneId = ZoneId.systemDefault()
+
+    var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
+    var selectedEpochDay by rememberSaveable { mutableStateOf(LocalDate.now(zoneId).toEpochDay()) }
+    val selectedDate = LocalDate.ofEpochDay(selectedEpochDay)
+
+    var showEditor by remember { mutableStateOf(false) }
+    var editingShift by remember { mutableStateOf<ShiftEntity?>(null) }
+    var editorInitialDate by remember { mutableStateOf(LocalDate.now(zoneId)) }
+
+    var showCycleDialog by remember { mutableStateOf(false) }
+    var cycleAnchorDate by remember { mutableStateOf(LocalDate.now(zoneId)) }
+
     val bg = MaterialTheme.colorScheme.background
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(bg, if (dark) Color(0xFF12172A) else Color(0xFFE9E6F7))))) {
-        Column(Modifier.fillMaxSize().statusBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(bg, palette.gradientEnd)))
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Column(Modifier.weight(1f)) {
-                    Text("SHIFT", fontSize = 13.sp, color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
-                    Text("CYBER", fontSize = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+                    Text(
+                        "SHIFT",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 4.sp
+                    )
+                    Text(
+                        "CYBER",
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 2.sp
+                    )
                 }
-                Box(Modifier.size(44.dp).border(1.dp, NeonPurple.copy(alpha=.5f), CircleShape).background(NeonPurple.copy(alpha=.1f), CircleShape), Alignment.Center) {
-                    Icon(Icons.Rounded.Bolt, null, tint = NeonPurple, modifier = Modifier.size(25.dp))
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .border(1.dp, palette.purple.copy(alpha = 0.5f), CircleShape)
+                        .background(palette.purple.copy(alpha = 0.12f), CircleShape),
+                    Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.Bolt,
+                        contentDescription = null,
+                        tint = palette.purple,
+                        modifier = Modifier.size(25.dp)
+                    )
                 }
             }
-            AnimatedContent(tab, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "tab-content", modifier = Modifier.weight(1f)) { selected ->
-                when (selected) {
+
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                label = "tab-content",
+                modifier = Modifier.weight(1f)
+            ) { currentTab ->
+                when (currentTab) {
                     Tab.HOME -> HomeScreen(
-                        shifts,
-                        onAdd = { selectedDateMillis = System.currentTimeMillis(); showAdd = true },
-                        onCalendar = { tab = Tab.CALENDAR },
-                        onAdjustHours = onAdjustHours
-                    )
-                    Tab.CALENDAR -> CalendarScreen(
-                        shifts,
-                        onAdd = { dateMillis -> selectedDateMillis = dateMillis; showAdd = true },
-                        onDelete = onDelete,
+                        shifts = shifts,
+                        onAddShift = {
+                            editingShift = null
+                            editorInitialDate = LocalDate.now(zoneId)
+                            showEditor = true
+                        },
+                        onEditShift = { shift ->
+                            editingShift = shift
+                            editorInitialDate = ShiftMath.localDateOf(shift.startMillis, zoneId)
+                            showEditor = true
+                        },
+                        onDeleteShift = onDeleteShift,
                         onAdjustHours = onAdjustHours,
-                        onCycle = { showCycle = true }
+                        onOpenCalendar = { tab = Tab.CALENDAR }
                     )
-                    Tab.STATS -> StatsScreen(shifts)
-                    Tab.SETTINGS -> SettingsScreen(dark, onToggleTheme)
+
+                    Tab.CALENDAR -> CalendarScreen(
+                        shifts = shifts,
+                        selectedDate = selectedDate,
+                        onSelectDate = { selectedEpochDay = it.toEpochDay() },
+                        onAddForDate = { date ->
+                            editingShift = null
+                            editorInitialDate = date
+                            showEditor = true
+                        },
+                        onEditShift = { shift ->
+                            editingShift = shift
+                            editorInitialDate = ShiftMath.localDateOf(shift.startMillis, zoneId)
+                            showEditor = true
+                        },
+                        onDeleteShift = onDeleteShift,
+                        onAdjustHours = onAdjustHours,
+                        onOpenCycleGenerator = { anchor ->
+                            cycleAnchorDate = anchor
+                            showCycleDialog = true
+                        }
+                    )
+
+                    Tab.STATS -> StatsScreen(shifts = shifts)
+
+                    Tab.SETTINGS -> SettingsScreen(
+                        settings = settings,
+                        onUpdateSettings = onUpdateSettings,
+                        onApplyRateToFutureShifts = onApplyRateToFutureShifts,
+                        onRefreshWidgetNow = onRefreshWidgetNow,
+                        onRequestNotificationPermission = onRequestNotificationPermission
+                    )
                 }
             }
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .96f), tonalElevation = 0.dp) {
-                listOf(Icons.Rounded.SpaceDashboard, Icons.Rounded.CalendarMonth, Icons.Rounded.QueryStats, Icons.Rounded.Tune).forEachIndexed { index, icon ->
-                    val item = Tab.values()[index]
+
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 0.dp
+            ) {
+                val icons = listOf(
+                    Icons.Rounded.SpaceDashboard,
+                    Icons.Rounded.CalendarMonth,
+                    Icons.Rounded.QueryStats,
+                    Icons.Rounded.Tune
+                )
+                Tab.values().forEachIndexed { index, item ->
                     NavigationBarItem(
                         selected = tab == item,
                         onClick = { tab = item },
-                        icon = { Icon(icon, null) },
+                        icon = { Icon(icons[index], contentDescription = item.label) },
                         label = { Text(item.label, fontSize = 10.sp) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = MaterialTheme.colorScheme.secondary, indicatorColor = MaterialTheme.colorScheme.secondary.copy(alpha=.14f))
-                    )
-                }
-            }
-        }
-    }
-    if (showAdd) AddShiftDialog(
-        initialDateMillis = selectedDateMillis,
-        onDismiss = { showAdd = false },
-        onSave = { a,b,c,d,e -> onAddShift(a,b,c,d,e); showAdd = false }
-    )
-    if (showCycle) CycleDialog(onDismiss = { showCycle = false }, onGenerate = { a,b,c,d,e -> onGenerate(a,b,c,d,e); showCycle = false })
-}
-
-@Composable
-private fun HomeScreen(shifts: List<ShiftEntity>, onAdd: () -> Unit, onCalendar: () -> Unit, onAdjustHours: (Long, Int) -> Unit) {
-    val now = System.currentTimeMillis()
-    val next = shifts.firstOrNull { it.endMillis > now }
-    val month = Calendar.getInstance()
-    val bounds = ShiftMath.monthBounds(month.get(Calendar.YEAR), month.get(Calendar.MONTH))
-    val monthShifts = shifts.filter { it.startMillis in bounds.first until bounds.second }
-    val hours = monthShifts.sumOf { ShiftMath.hours(it) }
-    val money = monthShifts.sumOf { ShiftMath.earnings(it) }
-    LazyColumn(contentPadding = PaddingValues(start=18.dp,end=18.dp,top=4.dp,bottom=20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item {
-            Text("ТВОЙ РИТМ. ТВОИ ПРАВИЛА.", fontSize = 11.sp, letterSpacing = 1.8.sp, color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text("Привет, на смене? ⚡", fontSize = 27.sp, fontWeight = FontWeight.Bold)
-        }
-        item {
-            NeonCard(Modifier.fillMaxWidth(), accent = NeonPurple) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(if (next == null) "НЕТ БЛИЖАЙШИХ СМЕН" else "СЛЕДУЮЩАЯ СМЕНА", fontSize=11.sp, color=MaterialTheme.colorScheme.secondary, letterSpacing=1.sp, fontWeight=FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Text(next?.title ?: "Время отдохнуть", fontSize=22.sp, fontWeight=FontWeight.Bold)
-                        if (next != null) {
-                            Text("${ShiftMath.dateLabel(next.startMillis)} · ${ShiftMath.timeLabel(next.startMillis)}–${ShiftMath.timeLabel(next.endMillis)}", color=MaterialTheme.colorScheme.onSurface.copy(alpha=.72f), fontSize=13.sp)
-                        } else Text("Добавь смену или создай повторяющийся цикл", fontSize=13.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.72f))
-                    }
-                    Icon(Icons.Rounded.Bolt, null, tint=NeonPurple, modifier=Modifier.size(38.dp))
-                }
-            }
-        }
-        item {
-            Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                MetricCard("ЗАРАБОТОК", String.format(Locale.getDefault(), "%.0f ₽", money), Icons.Rounded.AccountBalanceWallet, NeonGreen, Modifier.weight(1f))
-                MetricCard("ЧАСЫ", String.format(Locale.getDefault(), "%.1f ч", hours), Icons.Rounded.Schedule, NeonCyan, Modifier.weight(1f))
-            }
-        }
-        item {
-            Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                Button(onClick=onAdd, modifier=Modifier.weight(1f), shape=RoundedCornerShape(16.dp)) {
-                    Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(6.dp)); Text("Добавить смену")
-                }
-                OutlinedButton(onClick=onCalendar, modifier=Modifier.weight(1f), shape=RoundedCornerShape(16.dp)) {
-                    Icon(Icons.Rounded.CalendarMonth, null); Spacer(Modifier.width(6.dp)); Text("Календарь")
-                }
-            }
-        }
-        item { Text("БЛИЖАЙШИЕ ВЫХОДЫ", fontSize=12.sp, fontWeight=FontWeight.Bold, letterSpacing=1.5.sp, color=MaterialTheme.colorScheme.secondary) }
-        if (shifts.filter { it.endMillis > now }.take(4).isEmpty()) {
-            item { Text("Пока пусто — добавь смену, чтобы начать.", color=MaterialTheme.colorScheme.onBackground.copy(alpha=.65f)) }
-        } else items(shifts.filter { it.endMillis > now }.take(4)) { shift -> ShiftRow(shift, onAdjustHours = { delta -> onAdjustHours(shift.id, delta) }) }
-    }
-}
-
-@Composable
-private fun CalendarScreen(shifts: List<ShiftEntity>, onAdd: (Long) -> Unit, onDelete: (Long) -> Unit, onAdjustHours: (Long, Int) -> Unit, onCycle: () -> Unit) {
-    var monthOffset by remember { mutableIntStateOf(0) }
-    val month = Calendar.getInstance().apply { add(Calendar.MONTH, monthOffset) }
-    val year = month.get(Calendar.YEAR); val monthIndex = month.get(Calendar.MONTH)
-    val bounds = ShiftMath.monthBounds(year, monthIndex)
-    val days = Calendar.getInstance().apply { set(year, monthIndex, 1) }.getActualMaximum(Calendar.DAY_OF_MONTH)
-    val firstDow = ((Calendar.getInstance().apply { set(year, monthIndex, 1) }.get(Calendar.DAY_OF_WEEK) + 5) % 7)
-    val byDay = shifts.filter { it.startMillis in bounds.first until bounds.second }.groupBy {
-        Calendar.getInstance().apply { timeInMillis = it.startMillis }.get(Calendar.DAY_OF_MONTH)
-    }
-    Column(Modifier.fillMaxSize().padding(horizontal=18.dp)) {
-        Row(verticalAlignment=Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Календарь", fontSize=25.sp, fontWeight=FontWeight.Bold)
-                Text(SimpleDateFormat("LLLL yyyy", Locale("ru")).format(month.time).replaceFirstChar { it.uppercase() }, color=MaterialTheme.colorScheme.secondary)
-            }
-            IconButton(onClick={monthOffset--}) { Icon(Icons.Rounded.ChevronLeft, null) }
-            IconButton(onClick={monthOffset++}) { Icon(Icons.Rounded.ChevronRight, null) }
-        }
-        Spacer(Modifier.height(14.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween) {
-            listOf("ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС").forEach { Text(it, modifier=Modifier.weight(1f), fontSize=10.sp, color=MaterialTheme.colorScheme.onBackground.copy(alpha=.55f), textAlign=androidx.compose.ui.text.style.TextAlign.Center) }
-        }
-        Spacer(Modifier.height(8.dp))
-        val cellCount = ((firstDow + days + 6) / 7) * 7
-        for (week in 0 until cellCount/7) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(5.dp)) {
-                for (col in 0..6) {
-                    val day = week*7+col-firstDow+1
-                    Box(Modifier.weight(1f).aspectRatio(0.78f).padding(vertical=2.dp)) {
-                        if (day in 1..days) {
-                            val has = byDay[day].orEmpty().isNotEmpty()
-                            val isToday = day == Calendar.getInstance().get(Calendar.DAY_OF_MONTH) && monthOffset == 0
-                            Column(
-                                Modifier.fillMaxSize()
-                                    .background(if (has) NeonPurple.copy(alpha=.15f) else MaterialTheme.colorScheme.surface.copy(alpha=.65f), RoundedCornerShape(12.dp))
-                                    .then(if (isToday) Modifier.border(1.dp, MaterialTheme.colorScheme.secondary, RoundedCornerShape(12.dp)) else Modifier)
-                                    .clickable {
-                                        val selected = Calendar.getInstance().apply {
-                                            set(year, monthIndex, day, 12, 0, 0)
-                                            set(Calendar.MILLISECOND, 0)
-                                        }.timeInMillis
-                                        onAdd(selected)
-                                    }
-                                    .padding(6.dp),
-                                horizontalAlignment=Alignment.CenterHorizontally
-                            ) {
-                                Text("$day", fontSize=13.sp, fontWeight=if (isToday) FontWeight.Bold else FontWeight.Normal)
-                                if (has) {
-                                    Spacer(Modifier.height(4.dp))
-                                    Box(Modifier.size(6.dp).background(NeonPurple, CircleShape))
-                                    Text("${byDay[day]!!.size} смен", fontSize=8.sp, color=MaterialTheme.colorScheme.secondary, maxLines=1)
-                                } else Spacer(Modifier.height(10.dp))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-            Button(onClick={ onAdd(System.currentTimeMillis()) }, modifier=Modifier.weight(1f)) { Icon(Icons.Rounded.Add, null); Text("Вручную") }
-            OutlinedButton(onClick=onCycle, modifier=Modifier.weight(1f)) { Icon(Icons.Rounded.Repeat, null); Text("Создать цикл") }
-        }
-        Spacer(Modifier.height(12.dp))
-        Text("СМЕНЫ МЕСЯЦА", fontSize=11.sp, letterSpacing=1.5.sp, color=MaterialTheme.colorScheme.secondary, fontWeight=FontWeight.Bold)
-        LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp), contentPadding=PaddingValues(bottom=12.dp)) {
-            items(shifts.filter { it.startMillis in bounds.first until bounds.second }) { shift -> ShiftRow(shift, onDelete = { onDelete(shift.id) }, onAdjustHours = { delta -> onAdjustHours(shift.id, delta) }) }
-        }
-    }
-}
-
-@Composable
-private fun StatsScreen(shifts: List<ShiftEntity>) {
-    val cal = Calendar.getInstance()
-    val bounds = ShiftMath.monthBounds(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH))
-    val month = shifts.filter { it.startMillis in bounds.first until bounds.second }
-    val hours = month.sumOf { ShiftMath.hours(it) }
-    val pay = month.sumOf { ShiftMath.earnings(it) }
-    val previous = Calendar.getInstance().apply { add(Calendar.MONTH, -1) }
-    val prevBounds = ShiftMath.monthBounds(previous.get(Calendar.YEAR), previous.get(Calendar.MONTH))
-    val prev = shifts.filter { it.startMillis in prevBounds.first until prevBounds.second }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal=18.dp), contentPadding=PaddingValues(bottom=20.dp), verticalArrangement=Arrangement.spacedBy(14.dp)) {
-        item { Text("Статистика", fontSize=26.sp, fontWeight=FontWeight.Bold); Text("Твои цифры за месяц", color=MaterialTheme.colorScheme.secondary) }
-        item { MetricCard("ПЛАНОВЫЙ ДОХОД", String.format(Locale.getDefault(), "%.2f ₽", pay), Icons.Rounded.AccountBalanceWallet, NeonGreen, Modifier.fillMaxWidth()) }
-        item { Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            MetricCard("ОТРАБОТАНО", String.format(Locale.getDefault(), "%.1f ч", hours), Icons.Rounded.Schedule, NeonCyan, Modifier.weight(1f))
-            MetricCard("СМЕН", "${month.size}", Icons.Rounded.EventAvailable, NeonPurple, Modifier.weight(1f))
-        } }
-        item { NeonCard(Modifier.fillMaxWidth(), NeonCyan) {
-            Text("СРЕДНИЙ ДОХОД ЗА СМЕНУ", fontSize=11.sp, color=MaterialTheme.colorScheme.secondary, fontWeight=FontWeight.Bold)
-            Text(if (month.isEmpty()) "—" else String.format(Locale.getDefault(), "%.2f ₽", pay/month.size), fontSize=25.sp, fontWeight=FontWeight.Bold)
-        } }
-        item { Text("СРАВНЕНИЕ С ПРОШЛЫМ МЕСЯЦЕМ", fontSize=11.sp, color=MaterialTheme.colorScheme.secondary, fontWeight=FontWeight.Bold) }
-        item { Text("${prev.size} смен · ${String.format(Locale.getDefault(), "%.1f", prev.sumOf { ShiftMath.hours(it) })} ч · ${String.format(Locale.getDefault(), "%.2f", prev.sumOf { ShiftMath.earnings(it) })} ₽", fontSize=16.sp) }
-        item { Text("Расчёт основан на ставке каждой смены и не включает налоги, надбавки или переработки.", fontSize=12.sp, color=MaterialTheme.colorScheme.onBackground.copy(alpha=.6f)) }
-    }
-}
-
-
-@Composable
-private fun SettingsScreen(dark: Boolean, onToggleTheme: () -> Unit) {
-    val context = LocalContext.current
-
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 24.dp)
-    ) {
-        item {
-            Text(
-                "Настройки",
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "Подстрой приложение под себя",
-                color = MaterialTheme.colorScheme.secondary
-            )
-        }
-
-        item {
-            NeonCard(Modifier.fillMaxWidth(), NeonPurple) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        if (dark) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
-                        null,
-                        tint = NeonPurple,
-                        modifier = Modifier.size(30.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Тема приложения", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            if (dark) "Тёмная · Cyberpunk" else "Светлая · Neon",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f)
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.secondary,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            indicatorColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
                         )
-                    }
-                    Switch(
-                        checked = dark,
-                        onCheckedChange = { onToggleTheme() }
                     )
                 }
             }
         }
-
-        item {
-            NeonCard(Modifier.fillMaxWidth(), NeonCyan) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Widgets,
-                            contentDescription = null,
-                            tint = NeonCyan,
-                            modifier = Modifier.size(28.dp)
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Виджет Shift Cyber", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "Попробуй добавить график смен прямо с этой страницы.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .7f)
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = {
-                            try {
-                                val manager = AppWidgetManager.getInstance(context)
-                                val provider = ComponentName(
-                                    context,
-                                    ru.shiftcyber.widget.ShiftWidgetProvider::class.java
-                                )
-
-                                if (!manager.isRequestPinAppWidgetSupported) {
-                                    Toast.makeText(
-                                        context,
-                                        "Лаунчер не поддерживает запрос добавления виджета.",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                } else {
-                                    val sent = manager.requestPinAppWidget(
-                                        provider,
-                                        null,
-                                        null
-                                    )
-
-                                    Toast.makeText(
-                                        context,
-                                        if (sent) {
-                                            "Запрос передан лаунчеру. Проверь, появилось ли окно добавления."
-                                        } else {
-                                            "Лаунчер не принял запрос на добавление виджета."
-                                        },
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            } catch (e: Exception) {
-                                Toast.makeText(
-                                    context,
-                                    "Ошибка добавления: ${e.message ?: "неизвестная ошибка"}",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(
-                            Icons.Rounded.Add,
-                            contentDescription = null
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Добавить виджет на экран")
-                    }
-
-                    Text(
-                        "После нажатия подтверди добавление, если HyperOS покажет системное окно.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f)
-                    )
-                }
-            }
-        }
-
-        item {
-            SettingInfo(
-                Icons.Rounded.NotificationsActive,
-                "Уведомления",
-                "Напоминания о сменах планируются при добавлении смены."
-            )
-        }
-
-        item {
-            SettingInfo(
-                Icons.Rounded.Storage,
-                "Локальные данные",
-                "График хранится на устройстве. Резервное копирование пока не реализовано."
-            )
-        }
-
-        item {
-            SettingInfo(
-                Icons.Rounded.Palette,
-                "Дизайн",
-                "Неоновые акценты, мягкие градиенты и анимированные переходы."
-            )
-        }
     }
-}
 
-
-@Composable
-private fun SettingInfo(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String) {
-    NeonCard(Modifier.fillMaxWidth(), MaterialTheme.colorScheme.secondary) {
-        Row(verticalAlignment=Alignment.Top) {
-            Icon(icon, null, tint=MaterialTheme.colorScheme.secondary)
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(title, fontWeight=FontWeight.SemiBold)
-                Spacer(Modifier.height(3.dp))
-                Text(subtitle, fontSize=12.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.65f))
+    if (showEditor) {
+        ShiftEditorDialog(
+            editingShift = editingShift,
+            initialDate = editorInitialDate,
+            defaultHourlyRate = settings.hourlyRate,
+            onDismiss = {
+                showEditor = false
+                editingShift = null
+            },
+            onSave = { shift ->
+                onSaveShift(shift)
+                showEditor = false
+                editingShift = null
+            },
+            onDelete = { id ->
+                onDeleteShift(id)
+                showEditor = false
+                editingShift = null
             }
-        }
+        )
     }
-}
 
-@Composable
-private fun ShiftRow(shift: ShiftEntity, onDelete: (() -> Unit)? = null, onAdjustHours: ((Int) -> Unit)? = null) {
-    NeonCard(Modifier.fillMaxWidth(), when(shift.colorKey) { "green" -> NeonGreen; "cyan" -> NeonCyan; else -> NeonPurple }) {
-        Row(verticalAlignment=Alignment.CenterVertically) {
-            Box(Modifier.width(4.dp).height(46.dp).background(NeonPurple, RoundedCornerShape(4.dp)))
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(shift.title, fontWeight=FontWeight.SemiBold)
-                Text("${ShiftMath.dateLabel(shift.startMillis)} · ${ShiftMath.timeLabel(shift.startMillis)}–${ShiftMath.timeLabel(shift.endMillis)}", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.72f))
-                if (onAdjustHours != null) {
-                    Row(verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                        Text("Часы", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.65f))
-                        TextButton(onClick={ onAdjustHours(-1) }, contentPadding=PaddingValues(horizontal=5.dp, vertical=0.dp)) { Text("−1 ч") }
-                        TextButton(onClick={ onAdjustHours(1) }, contentPadding=PaddingValues(horizontal=5.dp, vertical=0.dp)) { Text("+1 ч") }
-                    }
-                }
+    if (showCycleDialog) {
+        CycleGeneratorDialog(
+            initialAnchorDate = cycleAnchorDate,
+            defaultHourlyRate = settings.hourlyRate,
+            existingShifts = shifts,
+            onDismiss = { showCycleDialog = false },
+            onGenerate = { request ->
+                onGenerateCycle(request)
+                showCycleDialog = false
             }
-            Column(horizontalAlignment=Alignment.End) {
-                Text(String.format(Locale.getDefault(), "%.0f ₽", ShiftMath.earnings(shift)), color=NeonGreen, fontWeight=FontWeight.Bold)
-                Text(String.format(Locale.getDefault(), "%.1f ч", ShiftMath.hours(shift)), fontSize=11.sp, color=MaterialTheme.colorScheme.secondary)
-            }
-            if (onDelete != null) IconButton(onClick=onDelete) { Icon(Icons.Rounded.DeleteOutline, null, tint=Color(0xFFFF7F9C)) }
-        }
+        )
     }
-}
-
-@Composable
-private fun MetricCard(title: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, accent: Color, modifier: Modifier = Modifier) {
-    NeonCard(modifier, accent) {
-        Icon(icon, null, tint=accent, modifier=Modifier.size(23.dp))
-        Spacer(Modifier.height(12.dp))
-        Text(title, fontSize=10.sp, color=MaterialTheme.colorScheme.onSurface.copy(alpha=.62f), letterSpacing=1.sp, fontWeight=FontWeight.Bold)
-        Spacer(Modifier.height(3.dp))
-        Text(value, fontSize=22.sp, fontWeight=FontWeight.Bold, maxLines=1)
-    }
-}
-
-@Composable
-private fun NeonCard(modifier: Modifier = Modifier, accent: Color, content: @Composable ColumnScope.() -> Unit) {
-    val alpha by animateFloatAsState(targetValue=.16f, label="glow")
-    Column(
-        modifier.shadow(12.dp, RoundedCornerShape(22.dp), ambientColor=accent.copy(alpha=.12f), spotColor=accent.copy(alpha=.16f))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha=.95f), RoundedCornerShape(22.dp))
-            .border(1.dp, accent.copy(alpha=alpha), RoundedCornerShape(22.dp))
-            .padding(16.dp),
-        content=content
-    )
-}
-
-@Composable
-private fun AddShiftDialog(initialDateMillis: Long, onDismiss: () -> Unit, onSave: (Long,Long,String,Double,Int)->Unit) {
-    var title by remember { mutableStateOf("Рабочая смена") }
-    var date by remember(initialDateMillis) { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(initialDateMillis))) }
-    var start by remember { mutableStateOf("09:00") }
-    var end by remember { mutableStateOf("18:00") }
-    var rate by remember { mutableStateOf("15") }
-    var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest=onDismiss,
-        title={ Text("Новая смена", fontWeight=FontWeight.Bold) },
-        text={
-            Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(title,{title=it},label={Text("Название")},singleLine=true)
-                OutlinedTextField(date,{date=it},label={Text("Дата (ГГГГ-ММ-ДД)")},singleLine=true)
-                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(start,{start=it},label={Text("Начало")}, modifier=Modifier.weight(1f),singleLine=true)
-                    OutlinedTextField(end,{end=it},label={Text("Конец")}, modifier=Modifier.weight(1f),singleLine=true)
-                }
-                OutlinedTextField(rate,{rate=it},label={Text("Ставка ₽/час")}, modifier=Modifier.fillMaxWidth(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
-                if (error != null) Text(error!!, color=MaterialTheme.colorScheme.error, fontSize=12.sp)
-            }
-        },
-        confirmButton={ Button(onClick={
-            try {
-                val d = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient=false }.parse(date)!!
-                val day = Calendar.getInstance().apply { time=d }
-                fun parseTime(s:String): Pair<Int,Int> {
-                    val p=s.split(":"); require(p.size==2)
-                    return p[0].toInt().coerceIn(0,23) to p[1].toInt().coerceIn(0,59)
-                }
-                val (sh,sm)=parseTime(start); val (eh,em)=parseTime(end)
-                val a=Calendar.getInstance().apply { time=d; set(Calendar.HOUR_OF_DAY,sh); set(Calendar.MINUTE,sm); set(Calendar.SECOND,0); set(Calendar.MILLISECOND,0) }
-                val b=Calendar.getInstance().apply { time=d; set(Calendar.HOUR_OF_DAY,eh); set(Calendar.MINUTE,em); set(Calendar.SECOND,0); set(Calendar.MILLISECOND,0); if (timeInMillis <= a.timeInMillis) add(Calendar.DAY_OF_MONTH,1) }
-                val r=rate.replace(",",".").toDouble()
-                require(r >= 0)
-                onSave(a.timeInMillis,b.timeInMillis,title.ifBlank{"Рабочая смена"},r,0)
-            } catch (e: Exception) { error="Проверь дату, время и ставку." }
-        }) { Text("Сохранить") } },
-        dismissButton={ TextButton(onClick=onDismiss){Text("Отмена")} }
-    )
-}
-
-@Composable
-private fun CycleDialog(onDismiss: () -> Unit, onGenerate: (Long,Int,List<Int>,Int,Double)->Unit) {
-    var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
-    var workDays by remember { mutableStateOf("4") }
-    var restDays by remember { mutableStateOf("2") }
-    var shiftHours by remember { mutableStateOf("12") }
-    var days by remember { mutableStateOf("90") }
-    var startHour by remember { mutableStateOf("9") }
-    var rate by remember { mutableStateOf("15") }
-    var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest=onDismiss,
-        title={Text("Повторяющийся график")},
-        text={
-            Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                Text("Выбери количество рабочих дней и выходных подряд. График повторится автоматически.", fontSize=12.sp, color=MaterialTheme.colorScheme.secondary)
-                OutlinedTextField(date,{date=it},label={Text("Дата начала (ГГГГ-ММ-ДД)")},singleLine=true)
-                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(workDays,{workDays=it},label={Text("Рабочих дней")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                    OutlinedTextField(restDays,{restDays=it},label={Text("Выходных")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                }
-                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(shiftHours,{shiftHours=it},label={Text("Часов за смену")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                    OutlinedTextField(days,{days=it},label={Text("Дней вперёд")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                }
-                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(startHour,{startHour=it},label={Text("Начало, час")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
-                    OutlinedTextField(rate,{rate=it},label={Text("Ставка ₽/ч")},modifier=Modifier.weight(1f),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
-                }
-                if (error != null) Text(error!!, color=MaterialTheme.colorScheme.error, fontSize=12.sp)
-            }
-        },
-        confirmButton={Button(onClick={
-            try {
-                val anchor=SimpleDateFormat("yyyy-MM-dd",Locale.US).apply { isLenient=false }.parse(date)!!.time
-                val work=workDays.toInt().coerceIn(1,30)
-                val rest=restDays.toInt().coerceIn(1,30)
-                val hours=shiftHours.toInt().coerceIn(1,24)
-                val pattern=List(work) { hours } + List(rest) { 0 }
-                val n=days.toInt().coerceIn(1,730)
-                val h=startHour.toInt().coerceIn(0,23)
-                val r=rate.replace(",",".").toDouble()
-                require(r >= 0)
-                onGenerate(anchor,n,pattern,h,r)
-            } catch (e: Exception) { error="Проверь дату, цикл и числовые значения." }
-        }) {Text("Создать график")} },
-        dismissButton={TextButton(onClick=onDismiss){Text("Отмена")}}
-    )
 }
