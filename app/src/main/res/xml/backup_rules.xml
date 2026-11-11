@@ -2,4 +2,7 @@
 <full-backup-content>
     <include domain="database" path="shift-cyber.db" />
     <include domain="sharedpref" path="." />
+    <include domain="file" path="user_data.json" />
+    <include domain="file" path="consent.json" />
+    <include domain="file" path="payment_state.json" />
 </full-backup-content>

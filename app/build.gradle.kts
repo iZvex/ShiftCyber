@@ -13,8 +13,18 @@ android {
         applicationId = "ru.shiftcyber"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.4.0"
+
+        val appodealKey = System.getenv("APPODEAL_APP_KEY") ?: ""
+        val yooKassaPaymentUrl = System.getenv("YOOKASSA_PAYMENT_URL") ?: ""
+        val yooKassaShopId = System.getenv("YOOKASSA_SHOP_ID") ?: ""
+        val yooKassaSecretKey = System.getenv("YOOKASSA_SECRET_KEY") ?: ""
+
+        buildConfigField("String", "APPODEAL_APP_KEY", "\"$appodealKey\"")
+        buildConfigField("String", "YOOKASSA_PAYMENT_URL", "\"$yooKassaPaymentUrl\"")
+        buildConfigField("String", "YOOKASSA_SHOP_ID", "\"$yooKassaShopId\"")
+        buildConfigField("String", "YOOKASSA_SECRET_KEY", "\"$yooKassaSecretKey\"")
     }
 
     val keystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
@@ -45,7 +55,22 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "META-INF/DEPENDENCIES"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -73,6 +98,44 @@ dependencies {
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.glance:glance-material3:1.1.1")
     implementation("com.google.android.gms:play-services-auth:21.3.0")
+
+    // Coroutines & Gson (строгое хранение состояний монетизации/согласия/оплаты в JSON)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("com.google.code.gson:gson:2.10.1")
+
+    // Appodeal Mediation SDK 3.5.0.+ и адаптеры для РФ: Яндекс РСЯ, VK Реклама (myTarget), Start.io
+    implementation("com.appodeal.ads:sdk:3.5.0.+") {
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "admob")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "notsy")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "meta")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "facebook")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "applovin")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "applovin_max")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "ironsource")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "level_play")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "unity_ads")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "vungle")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "inmobi")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "mintegral")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "bigo_ads")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "dt_exchange")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "pangle")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "amazon")
+        exclude(group = "com.appodeal.ads.sdk.networks", module = "mobilefuse")
+        exclude(group = "com.appodeal.ads.sdk.services", module = "appsflyer")
+        exclude(group = "com.appodeal.ads.sdk.services", module = "adjust")
+        exclude(group = "com.appodeal.ads.sdk.services", module = "firebase")
+        exclude(group = "com.appodeal.ads.sdk.services", module = "facebook_analytics")
+        exclude(group = "com.android.billingclient", module = "billing")
+    }
+    implementation("com.appodeal.ads.sdk.networks:yandex:3.5.0.+") {
+        exclude(group = "com.android.billingclient", module = "billing")
+    }
+    implementation("com.appodeal.ads.sdk.networks:my_target:3.5.0.+") {
+        exclude(group = "com.android.billingclient", module = "billing")
+    }
+    implementation("com.startapp:inapp-sdk:5.0.2")
+
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -3,6 +3,7 @@
 package ru.shiftcyber
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -29,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.QueryStats
 import androidx.compose.material.icons.rounded.SpaceDashboard
 import androidx.compose.material.icons.rounded.Tune
@@ -44,6 +46,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -67,25 +70,38 @@ import ru.shiftcyber.data.ShiftPayType
 import ru.shiftcyber.domain.CycleGenerator
 import ru.shiftcyber.domain.ShiftJsonCodec
 import ru.shiftcyber.domain.ShiftMath
+import ru.shiftcyber.monetization.AdController
+import ru.shiftcyber.monetization.AdDisplayManager
+import ru.shiftcyber.monetization.AppodealIntegration
+import ru.shiftcyber.monetization.ConsentManager
+import ru.shiftcyber.monetization.DataCollector
+import ru.shiftcyber.monetization.DataManager
+import ru.shiftcyber.monetization.YooKassaManager
 import ru.shiftcyber.notifications.ReminderScheduler
 import ru.shiftcyber.sync.ConsentRequiredException
 import ru.shiftcyber.sync.GoogleDriveSyncManager
 import ru.shiftcyber.ui.CalendarScreen
+import ru.shiftcyber.ui.Consent152FzDialog
 import ru.shiftcyber.ui.CycleGenerationRequest
 import ru.shiftcyber.ui.CycleGeneratorDialog
 import ru.shiftcyber.ui.HomeScreen
 import ru.shiftcyber.ui.LocalCyberPalette
+import ru.shiftcyber.ui.PaymentSuccessCelebrationDialog
 import ru.shiftcyber.ui.SettingsScreen
 import ru.shiftcyber.ui.ShiftCyberTheme
 import ru.shiftcyber.ui.ShiftEditorDialog
 import ru.shiftcyber.ui.StatsScreen
+import ru.shiftcyber.ui.SupportScreen
+import ru.shiftcyber.ui.YooKassaWebViewDialog
 import ru.shiftcyber.widget.WidgetUpdater
 import java.time.LocalDate
 import java.time.ZoneId
 
 class MainActivity : ComponentActivity() {
     private lateinit var db: ShiftDatabase
+    private lateinit var adController: AdController
     private var syncBusyState by mutableStateOf(false)
+    private var monetizationBootstrapped by mutableStateOf(false)
     private var pendingCloudActionAfterConsent: (() -> Unit)? = null
 
     private val askNotifications = registerForActivityResult(
@@ -192,12 +208,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = ShiftDatabase.get(this)
+        adController = buildAdController()
+        adController.attachActivity(this)
+
+        lifecycleScope.launch {
+            adController.bootstrap()
+            monetizationBootstrapped = true
+            handleIncomingPaymentIntent(intent)
+        }
+
         requestNotificationsIfNeeded()
 
         setContent {
             val shifts by db.shifts().observeAll().collectAsState(initial = emptyList())
             val storedSettings by db.settings().observe().collectAsState(initial = null)
             val activeSettings = storedSettings ?: AppSettings()
+
+            val consentState by adController.consentManager.consentFlow.collectAsState()
+            val webDialogSession by adController.yooKassaManager.webDialogSession.collectAsState()
+            val celebrationVisible by adController.yooKassaManager.celebrationVisible.collectAsState()
+            val composeScope = rememberCoroutineScope()
 
             LaunchedEffect(Unit) {
                 withContext(Dispatchers.IO) {
@@ -223,6 +253,7 @@ class MainActivity : ComponentActivity() {
                 ShiftCyberApp(
                     shifts = shifts,
                     settings = activeSettings,
+                    adController = adController,
                     isSyncBusy = syncBusyState,
                     onSaveShift = { shift ->
                         lifecycleScope.launch(Dispatchers.IO) {
@@ -407,7 +438,107 @@ class MainActivity : ComponentActivity() {
                         requestNotificationsIfNeeded(force = true)
                     }
                 )
+
+                // Диалог согласия на обработку персональных данных по 152-ФЗ при первом запуске
+                if (monetizationBootstrapped && !consentState.decided) {
+                    Consent152FzDialog(
+                        onAccept = {
+                            composeScope.launch {
+                                adController.consentManager.saveConsentDecision(true)
+                            }
+                        },
+                        onDecline = {
+                            composeScope.launch {
+                                adController.consentManager.saveConsentDecision(false)
+                            }
+                        }
+                    )
+                }
+
+                // Модальный WebView выбора суммы и оплаты через ЮKassa
+                if (webDialogSession.visible) {
+                    YooKassaWebViewDialog(
+                        initialAmountRub = webDialogSession.initialAmountRub,
+                        paymentId = webDialogSession.paymentId,
+                        yooKassaManager = adController.yooKassaManager,
+                        onPaymentCompleted = { confirmedId, confirmedAmount ->
+                            composeScope.launch {
+                                adController.handlePaymentCallback(
+                                    paymentId = confirmedId,
+                                    amountRub = confirmedAmount,
+                                    containerIdToHide = R.id.support_banner_container
+                                )
+                                GoogleDriveSyncManager.notifySystemBackup(applicationContext)
+                            }
+                        },
+                        onDismiss = {
+                            adController.yooKassaManager.dismissSupportOptions()
+                        }
+                    )
+                }
+
+                // Анимированный экран благодарности после успешной поддержки разработчика
+                PaymentSuccessCelebrationDialog(
+                    visible = celebrationVisible,
+                    onDismiss = {
+                        adController.yooKassaManager.dismissCelebration()
+                    }
+                )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        lifecycleScope.launch {
+            handleIncomingPaymentIntent(intent)
+        }
+    }
+
+    private fun buildAdController(): AdController {
+        val dataManager = DataManager(applicationContext)
+        val yooKassaManager = YooKassaManager(dataManager)
+        lateinit var appodealRef: AppodealIntegration
+        val consentManager = ConsentManager(dataManager) { granted ->
+            if (::adController.isInitialized) {
+                adController.appodealIntegration.setTrackingConsent(granted)
+            } else {
+                runCatching { appodealRef.setTrackingConsent(granted) }
+            }
+        }
+        appodealRef = AppodealIntegration(
+            consentManager = consentManager,
+            yooKassaManager = yooKassaManager
+        )
+        val dataCollector = DataCollector(applicationContext, dataManager)
+        val adDisplayManager = AdDisplayManager(yooKassaManager)
+
+        return AdController(
+            appContext = applicationContext,
+            dataManager = dataManager,
+            dataCollector = dataCollector,
+            consentManager = consentManager,
+            yooKassaManager = yooKassaManager,
+            appodealIntegration = appodealRef,
+            adDisplayManager = adDisplayManager
+        )
+    }
+
+    private suspend fun handleIncomingPaymentIntent(incoming: Intent?) {
+        val uri = incoming?.data ?: return
+        if (uri.scheme == YooKassaManager.SUCCESS_DEEP_LINK_SCHEME &&
+            uri.host == YooKassaManager.SUCCESS_DEEP_LINK_HOST
+        ) {
+            val paymentId = uri.getQueryParameter("paymentId")
+                ?: uri.getQueryParameter("label")
+                ?: "yk_deeplink_${System.currentTimeMillis()}"
+            val amount = uri.getQueryParameter("amount")?.toIntOrNull() ?: 100
+            adController.handlePaymentCallback(
+                paymentId = paymentId,
+                amountRub = amount,
+                containerIdToHide = R.id.support_banner_container
+            )
+            GoogleDriveSyncManager.notifySystemBackup(applicationContext)
         }
     }
 
@@ -517,17 +648,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) {
-    HOME("Главная"),
-    CALENDAR("Календарь"),
-    STATS("Статистика"),
-    SETTINGS("Настройки")
+private enum class Tab(val label: String, val pageId: String) {
+    HOME("Главная", "home"),
+    CALENDAR("Календарь", "calendar"),
+    STATS("Статистика", "stats"),
+    SUPPORT("Поддержка", "support"),
+    SETTINGS("Настройки", "settings")
 }
 
 @Composable
 private fun ShiftCyberApp(
     shifts: List<ShiftEntity>,
     settings: AppSettings,
+    adController: AdController,
     isSyncBusy: Boolean,
     onSaveShift: (ShiftEntity) -> Unit,
     onDeleteShift: (Long) -> Unit,
@@ -557,6 +690,10 @@ private fun ShiftCyberApp(
 
     var showCycleDialog by remember { mutableStateOf(false) }
     var cycleAnchorDate by remember { mutableStateOf(LocalDate.now(zoneId)) }
+
+    LaunchedEffect(tab) {
+        adController.onPageVisited(tab.pageId)
+    }
 
     val bg = MaterialTheme.colorScheme.background
 
@@ -656,6 +793,8 @@ private fun ShiftCyberApp(
 
                     Tab.STATS -> StatsScreen(shifts = shifts)
 
+                    Tab.SUPPORT -> SupportScreen(adController = adController)
+
                     Tab.SETTINGS -> SettingsScreen(
                         settings = settings,
                         isSyncBusy = isSyncBusy,
@@ -681,6 +820,7 @@ private fun ShiftCyberApp(
                     Icons.Rounded.SpaceDashboard,
                     Icons.Rounded.CalendarMonth,
                     Icons.Rounded.QueryStats,
+                    Icons.Rounded.Favorite,
                     Icons.Rounded.Tune
                 )
                 Tab.values().forEachIndexed { index, item ->
@@ -688,7 +828,7 @@ private fun ShiftCyberApp(
                         selected = tab == item,
                         onClick = { tab = item },
                         icon = { Icon(icons[index], contentDescription = item.label) },
-                        label = { Text(item.label, fontSize = 10.sp) },
+                        label = { Text(item.label, fontSize = 9.sp, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MaterialTheme.colorScheme.secondary,
                             selectedTextColor = MaterialTheme.colorScheme.onSurface,

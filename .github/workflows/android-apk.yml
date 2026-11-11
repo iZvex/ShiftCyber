@@ -85,6 +85,11 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Run unit tests and build signed Release APK
+        env:
+          APPODEAL_APP_KEY: ${{ secrets.APPODEAL_APP_KEY }}
+          YOOKASSA_PAYMENT_URL: ${{ secrets.YOOKASSA_PAYMENT_URL }}
+          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_SHOP_ID }}
+          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_SECRET_KEY }}
         run: |
           set -o pipefail
           if ! gradle --no-daemon testReleaseUnitTest assembleRelease 2>&1 | tee /tmp/gradle-build.log; then
