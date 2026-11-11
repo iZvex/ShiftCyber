@@ -29,6 +29,9 @@ interface ShiftDao {
     @Query("DELETE FROM shifts WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
 
+    @Query("DELETE FROM shifts")
+    suspend fun deleteAll()
+
     @Query("SELECT * FROM shifts WHERE startMillis >= :from AND startMillis < :to ORDER BY startMillis ASC")
     suspend fun between(from: Long, to: Long): List<ShiftEntity>
 

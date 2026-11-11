@@ -7,6 +7,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.data.ShiftExtraItem
+import ru.shiftcyber.data.ShiftPayType
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
@@ -39,6 +41,66 @@ class ShiftMathTest {
 
         assertEquals(12.5, ShiftMath.hours(shift), 1e-9)
         assertEquals(12.5 * 333.33, ShiftMath.earnings(shift), 1e-6)
+    }
+
+    @Test
+    fun `daily shift calculates fixed dayRate plus piecework extra items`() {
+        val start = LocalDate.of(2026, 11, 12).atTime(0, 0).atZone(moscowZone).toInstant().toEpochMilli()
+        val end = LocalDate.of(2026, 11, 13).atTime(0, 0).atZone(moscowZone).toInstant().toEpochMilli()
+        val extras = listOf(
+            ShiftExtraItem(comment = "Доставка заказов", quantity = 14.0, unitPrice = 150.0),
+            ShiftExtraItem(comment = "Сборка комплектов", quantity = 3.0, unitPrice = 250.0)
+        )
+        val dailyShift = ShiftEntity(
+            id = 7L,
+            startMillis = start,
+            endMillis = end,
+            payType = ShiftPayType.DAILY,
+            dayRate = 3000.0,
+            extrasJson = ShiftJsonCodec.encodeExtras(extras)
+        )
+
+        // 14 * 150 = 2100; 3 * 250 = 750 -> extrasTotal = 2850
+        assertEquals(2850.0, ShiftMath.extrasTotal(dailyShift), 1e-9)
+        // dayRate (3000) + extras (2850) = 5850 ₽
+        assertEquals(5850.0, ShiftMath.earnings(dailyShift), 1e-9)
+        assertFalse(ShiftMath.canAdjustHours(dailyShift, 1))
+        assertNull(ShiftMath.adjustDurationHours(dailyShift, 1))
+    }
+
+    @Test
+    fun `mixed hourly and daily shifts aggregate accurately in period stats`() {
+        val nov10Start = LocalDate.of(2026, 11, 10).atTime(9, 0).atZone(moscowZone).toInstant().toEpochMilli()
+        val nov10End = LocalDate.of(2026, 11, 10).atTime(21, 0).atZone(moscowZone).toInstant().toEpochMilli()
+        val hourlyShift = ShiftEntity(
+            id = 1L,
+            startMillis = nov10Start,
+            endMillis = nov10End,
+            payType = ShiftPayType.HOURLY,
+            hourlyRate = 400.0
+        )
+
+        val nov11Start = LocalDate.of(2026, 11, 11).atStartOfDay(moscowZone).toInstant().toEpochMilli()
+        val nov11End = LocalDate.of(2026, 11, 12).atStartOfDay(moscowZone).toInstant().toEpochMilli()
+        val dailyShift = ShiftEntity(
+            id = 2L,
+            startMillis = nov11Start,
+            endMillis = nov11End,
+            payType = ShiftPayType.DAILY,
+            dayRate = 2500.0,
+            extrasJson = ShiftJsonCodec.encodeExtras(
+                listOf(ShiftExtraItem(comment = "Выезд", quantity = 2.0, unitPrice = 500.0))
+            )
+        )
+
+        val (novFrom, novTo) = ShiftMath.monthBounds(YearMonth.of(2026, 11), moscowZone)
+        val stats = ShiftMath.calculatePeriodStats(listOf(hourlyShift, dailyShift), novFrom, novTo)
+
+        assertEquals(2, stats.shiftCount)
+        assertEquals(12.0, stats.totalHours, 1e-9)
+        // 4800 + (2500 + 1000) = 8300
+        assertEquals(8300.0, stats.totalEarnings, 1e-9)
+        assertEquals(4150.0, stats.averageShiftEarnings, 1e-9)
     }
 
     @Test
@@ -104,5 +166,7 @@ class ShiftMathTest {
         assertEquals("3 600,50 ₽", ShiftMath.formatCurrency(3600.5))
         assertEquals("12 ч", ShiftMath.formatHours(12.0))
         assertEquals("12,5 ч", ShiftMath.formatHours(12.5))
+        assertEquals("14", ShiftMath.formatQuantity(14.0))
+        assertEquals("2,5", ShiftMath.formatQuantity(2.5))
     }
 }

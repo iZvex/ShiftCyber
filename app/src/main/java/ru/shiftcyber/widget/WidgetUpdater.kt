@@ -2,9 +2,11 @@ package ru.shiftcyber.widget
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.view.View
 import android.widget.RemoteViews
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +21,7 @@ import java.time.ZoneId
 
 object WidgetUpdater {
     const val PREFS_NAME = "shift_widget"
+    private const val PREF_PREVIEW_PUBLISHED = "preview_published_v2"
 
     data class WidgetState(
         val status: String,
@@ -62,7 +65,11 @@ object WidgetUpdater {
             else -> "Нажми, чтобы добавить смену в Shift Cyber"
         }
 
-        val hours = primary?.let { ShiftMath.formatHours(ShiftMath.hours(it)) } ?: "—"
+        val hours = when {
+            primary == null -> "—"
+            primary.isDaily -> "1 день"
+            else -> ShiftMath.formatHours(ShiftMath.hours(primary))
+        }
         val earnings = primary?.let { ShiftMath.formatCurrency(ShiftMath.earnings(it)) } ?: "— ₽"
 
         val nextText = when {
@@ -86,7 +93,8 @@ object WidgetUpdater {
 
     suspend fun refreshFromDatabase(
         context: Context,
-        targetIds: IntArray? = null
+        targetFullIds: IntArray? = null,
+        targetCompactIds: IntArray? = null
     ) = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         val db = ShiftDatabase.get(appContext)
@@ -98,7 +106,8 @@ object WidgetUpdater {
             transparency = settings?.widgetTransparency ?: 88
         )
         saveToPrefs(appContext, state)
-        pushToWidgets(appContext, state, targetIds)
+        pushToWidgets(appContext, state, targetFullIds, targetCompactIds)
+        publishCatalogPreviewsIfSupported(appContext)
     }
 
     fun refreshWithSnapshot(
@@ -113,10 +122,15 @@ object WidgetUpdater {
             transparency = settings?.widgetTransparency ?: 88
         )
         saveToPrefs(appContext, state)
-        pushToWidgets(appContext, state, null)
+        pushToWidgets(appContext, state, null, null)
+        publishCatalogPreviewsIfSupported(appContext)
     }
 
-    fun renderCached(context: Context, targetIds: IntArray? = null) {
+    fun renderCached(
+        context: Context,
+        targetFullIds: IntArray? = null,
+        targetCompactIds: IntArray? = null
+    ) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val state = WidgetState(
@@ -129,7 +143,42 @@ object WidgetUpdater {
                 ?: "Следующая смена: не запланирована",
             transparency = prefs.getInt("transparency", 88)
         )
-        pushToWidgets(appContext, state, targetIds)
+        pushToWidgets(appContext, state, targetFullIds, targetCompactIds)
+    }
+
+    private fun publishCatalogPreviewsIfSupported(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(PREF_PREVIEW_PUBLISHED, false)) return
+
+        runCatching {
+            val manager = AppWidgetManager.getInstance(context)
+            val fullPreview = RemoteViews(context.packageName, R.layout.shift_widget).apply {
+                setTextViewText(R.id.widget_status, "Дневная смена")
+                setTextViewText(R.id.widget_details, "Сегодня · 09:00–21:00")
+                setTextViewText(R.id.widget_hours, "12 ч")
+                setTextViewText(R.id.widget_earnings, "4 200 ₽")
+                setTextViewText(R.id.widget_next, "Далее: завтра · 09:00")
+            }
+            val compactPreview = RemoteViews(context.packageName, R.layout.shift_widget_compact).apply {
+                setTextViewText(R.id.widget_compact_status, "Дневная смена")
+                setTextViewText(R.id.widget_compact_details, "Сегодня · 09:00–21:00")
+                setTextViewText(R.id.widget_compact_earnings, "4 200 ₽")
+            }
+            val okFull = manager.setWidgetPreview(
+                ComponentName(context, ShiftWidgetProvider::class.java),
+                AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN,
+                fullPreview
+            )
+            val okCompact = manager.setWidgetPreview(
+                ComponentName(context, ShiftCompactWidgetProvider::class.java),
+                AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN,
+                compactPreview
+            )
+            if (okFull || okCompact) {
+                prefs.edit().putBoolean(PREF_PREVIEW_PUBLISHED, true).apply()
+            }
+        }
     }
 
     private fun saveToPrefs(context: Context, state: WidgetState) {
@@ -147,28 +196,25 @@ object WidgetUpdater {
     private fun pushToWidgets(
         context: Context,
         state: WidgetState,
-        targetIds: IntArray?
+        targetFullIds: IntArray?,
+        targetCompactIds: IntArray?
     ) {
         val manager = AppWidgetManager.getInstance(context)
-        val ids = targetIds?.takeIf { it.isNotEmpty() }
-            ?: manager.getAppWidgetIds(ComponentName(context, ShiftWidgetProvider::class.java))
-        if (ids.isEmpty()) return
-
         val bgRes = when {
             state.transparency >= 93 -> R.drawable.widget_bg_solid
             state.transparency <= 75 -> R.drawable.widget_bg_glass
             else -> R.drawable.widget_bg_translucent
         }
-
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
 
-        ids.forEach { id ->
+        val fullIds = targetFullIds?.takeIf { it.isNotEmpty() }
+            ?: manager.getAppWidgetIds(ComponentName(context, ShiftWidgetProvider::class.java))
+        fullIds.forEach { id ->
             runCatching {
                 val views = RemoteViews(context.packageName, R.layout.shift_widget)
                 views.setInt(R.id.widget_root, "setBackgroundResource", bgRes)
-
                 views.setTextViewText(R.id.widget_status, state.status)
                 views.setTextViewText(R.id.widget_details, state.details)
                 views.setTextViewText(R.id.widget_hours, state.hours)
@@ -202,7 +248,27 @@ object WidgetUpdater {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
                 views.setOnClickPendingIntent(R.id.widget_root, pendingIntent)
+                manager.updateAppWidget(id, views)
+            }
+        }
 
+        val compactIds = targetCompactIds?.takeIf { it.isNotEmpty() }
+            ?: manager.getAppWidgetIds(ComponentName(context, ShiftCompactWidgetProvider::class.java))
+        compactIds.forEach { id ->
+            runCatching {
+                val views = RemoteViews(context.packageName, R.layout.shift_widget_compact)
+                views.setInt(R.id.widget_compact_root, "setBackgroundResource", bgRes)
+                views.setTextViewText(R.id.widget_compact_status, state.status)
+                views.setTextViewText(R.id.widget_compact_details, state.details)
+                views.setTextViewText(R.id.widget_compact_earnings, state.earnings)
+
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    id + 100_000,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                views.setOnClickPendingIntent(R.id.widget_compact_root, pendingIntent)
                 manager.updateAppWidget(id, views)
             }
         }

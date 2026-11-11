@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package ru.shiftcyber
 
 import android.Manifest
@@ -53,15 +55,21 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.room.withTransaction
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.common.api.ApiException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.shiftcyber.data.AppSettings
 import ru.shiftcyber.data.ShiftDatabase
 import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.data.ShiftPayType
 import ru.shiftcyber.domain.CycleGenerator
+import ru.shiftcyber.domain.ShiftJsonCodec
 import ru.shiftcyber.domain.ShiftMath
 import ru.shiftcyber.notifications.ReminderScheduler
+import ru.shiftcyber.sync.ConsentRequiredException
+import ru.shiftcyber.sync.GoogleDriveSyncManager
 import ru.shiftcyber.ui.CalendarScreen
 import ru.shiftcyber.ui.CycleGenerationRequest
 import ru.shiftcyber.ui.CycleGeneratorDialog
@@ -77,10 +85,109 @@ import java.time.ZoneId
 
 class MainActivity : ComponentActivity() {
     private lateinit var db: ShiftDatabase
+    private var syncBusyState by mutableStateOf(false)
+    private var pendingCloudActionAfterConsent: (() -> Unit)? = null
 
     private val askNotifications = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
+
+    private val googleSignInLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val email = account.email.orEmpty()
+            lifecycleScope.launch(Dispatchers.IO) {
+                val current = db.settings().getOnce() ?: AppSettings()
+                db.settings().save(current.copy(googleAccountEmail = email, autoGoogleSync = true))
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Аккаунт Google подключён: $email",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    performGoogleUpload(silent = false)
+                }
+            }
+        } catch (apiEx: ApiException) {
+            val msg = if (apiEx.statusCode == 10) {
+                "Для прямого OAuth добавь SHA-1 сертификата в Google Cloud Console или используй кнопку «Сохранить в Диск» ниже."
+            } else if (apiEx.statusCode == 12501) {
+                "Вход через Google отменён."
+            } else {
+                "Не удалось войти через Google (код ${apiEx.statusCode})."
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private val googleConsentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val next = pendingCloudActionAfterConsent
+        pendingCloudActionAfterConsent = null
+        if (result.resultCode == RESULT_OK && next != null) {
+            next.invoke()
+        }
+    }
+
+    private val driveExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        syncBusyState = true
+        lifecycleScope.launch {
+            val res = GoogleDriveSyncManager.exportToUri(this@MainActivity, uri)
+            syncBusyState = false
+            res.fold(
+                onSuccess = { count ->
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Сохранено в Google Диск (смен: $count)",
+                        Toast.LENGTH_LONG
+                    ).show()
+                },
+                onFailure = { err ->
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Ошибка сохранения: ${err.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
+        }
+    }
+
+    private val driveImportLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        syncBusyState = true
+        lifecycleScope.launch {
+            val res = GoogleDriveSyncManager.importFromUri(this@MainActivity, uri)
+            res.fold(
+                onSuccess = { payload ->
+                    applyRestoredPayload(payload)
+                    syncBusyState = false
+                    Toast.makeText(
+                        this@MainActivity,
+                        "График загружен (смен: ${payload.shifts.size})",
+                        Toast.LENGTH_LONG
+                    ).show()
+                },
+                onFailure = { err ->
+                    syncBusyState = false
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Ошибка чтения файла: ${err.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,6 +198,16 @@ class MainActivity : ComponentActivity() {
             val shifts by db.shifts().observeAll().collectAsState(initial = emptyList())
             val storedSettings by db.settings().observe().collectAsState(initial = null)
             val activeSettings = storedSettings ?: AppSettings()
+
+            LaunchedEffect(Unit) {
+                withContext(Dispatchers.IO) {
+                    val signedIn = GoogleDriveSyncManager.getSignedInAccount(this@MainActivity)
+                    val existing = db.settings().getOnce()
+                    if (signedIn?.email != null && existing != null && existing.googleAccountEmail != signedIn.email) {
+                        db.settings().save(existing.copy(googleAccountEmail = signedIn.email.orEmpty()))
+                    }
+                }
+            }
 
             LaunchedEffect(shifts, storedSettings) {
                 withContext(Dispatchers.IO) {
@@ -106,6 +223,7 @@ class MainActivity : ComponentActivity() {
                 ShiftCyberApp(
                     shifts = shifts,
                     settings = activeSettings,
+                    isSyncBusy = syncBusyState,
                     onSaveShift = { shift ->
                         lifecycleScope.launch(Dispatchers.IO) {
                             val currentSettings = db.settings().getOnce() ?: activeSettings
@@ -120,23 +238,28 @@ class MainActivity : ComponentActivity() {
                                 sameDay = currentSettings.notifySameDay
                             )
                             WidgetUpdater.refreshFromDatabase(applicationContext)
+                            triggerAutoSyncIfEnabled(currentSettings)
                         }
                     },
                     onDeleteShift = { id ->
                         lifecycleScope.launch(Dispatchers.IO) {
+                            val currentSettings = db.settings().getOnce() ?: activeSettings
                             db.shifts().delete(id)
                             ReminderScheduler.cancel(applicationContext, id)
                             WidgetUpdater.refreshFromDatabase(applicationContext)
+                            triggerAutoSyncIfEnabled(currentSettings)
                         }
                     },
                     onAdjustHours = { id, delta ->
                         lifecycleScope.launch(Dispatchers.IO) {
+                            val currentSettings = db.settings().getOnce() ?: activeSettings
                             val existing = db.shifts().getById(id) ?: return@launch
                             val adjusted = ShiftMath.adjustDurationHours(existing, delta)
                                 ?.copy(isManual = true)
                                 ?: return@launch
                             db.shifts().upsert(adjusted)
                             WidgetUpdater.refreshFromDatabase(applicationContext)
+                            triggerAutoSyncIfEnabled(currentSettings)
                         }
                     },
                     onGenerateCycle = { request ->
@@ -152,6 +275,8 @@ class MainActivity : ComponentActivity() {
                                 startHour = request.startHour,
                                 startMinute = request.startMinute,
                                 hourlyRate = request.hourlyRate,
+                                dayRate = request.dayRate,
+                                payType = request.payType,
                                 title = request.title,
                                 colorKey = request.colorKey,
                                 zoneId = zoneId
@@ -200,6 +325,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             WidgetUpdater.refreshFromDatabase(applicationContext)
+                            triggerAutoSyncIfEnabled(currentSettings)
 
                             val summary = buildString {
                                 append("Создано: ${savedShifts.size}")
@@ -226,19 +352,51 @@ class MainActivity : ComponentActivity() {
                                 ReminderScheduler.rescheduleAll(applicationContext, allShifts, updated)
                             }
                             WidgetUpdater.refreshFromDatabase(applicationContext)
+                            triggerAutoSyncIfEnabled(updated)
                         }
                     },
-                    onApplyRateToFutureShifts = { newRate ->
+                    onApplyRatesToFutureShifts = { newHourly, newDaily ->
                         lifecycleScope.launch(Dispatchers.IO) {
                             val now = System.currentTimeMillis()
+                            val currentSettings = db.settings().getOnce() ?: activeSettings
                             db.withTransaction {
                                 val futureShifts = db.shifts().getAll().filter { it.startMillis > now }
                                 if (futureShifts.isNotEmpty()) {
-                                    db.shifts().upsertAll(futureShifts.map { it.copy(hourlyRate = newRate) })
+                                    val updatedList = futureShifts.map { shift ->
+                                        if (shift.payType == ShiftPayType.DAILY) {
+                                            shift.copy(dayRate = newDaily)
+                                        } else {
+                                            shift.copy(hourlyRate = newHourly)
+                                        }
+                                    }
+                                    db.shifts().upsertAll(updatedList)
                                 }
                             }
                             WidgetUpdater.refreshFromDatabase(applicationContext)
+                            triggerAutoSyncIfEnabled(currentSettings)
                         }
+                    },
+                    onGoogleSignInClick = {
+                        val intent = GoogleDriveSyncManager.getSignInClient(this).signInIntent
+                        googleSignInLauncher.launch(intent)
+                    },
+                    onGoogleSignOutClick = {
+                        lifecycleScope.launch {
+                            GoogleDriveSyncManager.signOut(this@MainActivity)
+                            withContext(Dispatchers.IO) {
+                                val cur = db.settings().getOnce() ?: activeSettings
+                                db.settings().save(cur.copy(googleAccountEmail = "", autoGoogleSync = false))
+                            }
+                            Toast.makeText(this@MainActivity, "Аккаунт Google отключён", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onGoogleUploadClick = { performGoogleUpload(silent = false) },
+                    onGoogleDownloadClick = { performGoogleDownload() },
+                    onDriveFileExportClick = {
+                        driveExportLauncher.launch("shift-cyber-backup-${LocalDate.now()}.json")
+                    },
+                    onDriveFileImportClick = {
+                        driveImportLauncher.launch(arrayOf("application/json", "*/*"))
                     },
                     onRefreshWidgetNow = {
                         lifecycleScope.launch(Dispatchers.IO) {
@@ -252,6 +410,99 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun triggerAutoSyncIfEnabled(settings: AppSettings) {
+        GoogleDriveSyncManager.notifySystemBackup(applicationContext)
+        if (settings.autoGoogleSync && settings.googleAccountEmail.isNotBlank()) {
+            lifecycleScope.launch {
+                GoogleDriveSyncManager.uploadToGoogleDrive(applicationContext)
+            }
+        }
+    }
+
+    private fun performGoogleUpload(silent: Boolean) {
+        syncBusyState = true
+        lifecycleScope.launch {
+            val res = GoogleDriveSyncManager.uploadToGoogleDrive(this@MainActivity)
+            syncBusyState = false
+            res.fold(
+                onSuccess = { count ->
+                    if (!silent) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Синхронизировано с Google Облаком (смен: $count)",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                },
+                onFailure = { err ->
+                    if (err is ConsentRequiredException) {
+                        pendingCloudActionAfterConsent = { performGoogleUpload(silent = false) }
+                        googleConsentLauncher.launch(err.consentIntent)
+                    } else if (!silent) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            err.message ?: "Ошибка выгрузки в Google Облако",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            )
+        }
+    }
+
+    private fun performGoogleDownload() {
+        syncBusyState = true
+        lifecycleScope.launch {
+            val res = GoogleDriveSyncManager.downloadFromGoogleDrive(this@MainActivity)
+            res.fold(
+                onSuccess = { payload ->
+                    applyRestoredPayload(payload)
+                    syncBusyState = false
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Восстановлено из Google Облака (смен: ${payload.shifts.size})",
+                        Toast.LENGTH_LONG
+                    ).show()
+                },
+                onFailure = { err ->
+                    syncBusyState = false
+                    if (err is ConsentRequiredException) {
+                        pendingCloudActionAfterConsent = { performGoogleDownload() }
+                        googleConsentLauncher.launch(err.consentIntent)
+                    } else {
+                        Toast.makeText(
+                            this@MainActivity,
+                            err.message ?: "Ошибка загрузки из Google Облака",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            )
+        }
+    }
+
+    private suspend fun applyRestoredPayload(payload: ShiftJsonCodec.SyncPayload) =
+        withContext(Dispatchers.IO) {
+            val existingShifts = db.shifts().getAll()
+            ReminderScheduler.cancelMany(applicationContext, existingShifts.map { it.id })
+
+            val saved = mutableListOf<ShiftEntity>()
+            val mergedSettings = payload.settings.copy(
+                lastSyncMillis = System.currentTimeMillis()
+            )
+            db.withTransaction {
+                db.shifts().deleteAll()
+                payload.shifts.forEach { shift ->
+                    val newId = db.shifts().upsert(shift.copy(id = 0L))
+                    saved += shift.copy(id = newId)
+                }
+                db.settings().save(mergedSettings)
+            }
+
+            ReminderScheduler.rescheduleAll(applicationContext, saved, mergedSettings)
+            WidgetUpdater.refreshFromDatabase(applicationContext)
+        }
 
     private fun requestNotificationsIfNeeded(force: Boolean = false) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -277,12 +528,19 @@ private enum class Tab(val label: String) {
 private fun ShiftCyberApp(
     shifts: List<ShiftEntity>,
     settings: AppSettings,
+    isSyncBusy: Boolean,
     onSaveShift: (ShiftEntity) -> Unit,
     onDeleteShift: (Long) -> Unit,
     onAdjustHours: (Long, Int) -> Unit,
     onGenerateCycle: (CycleGenerationRequest) -> Unit,
     onUpdateSettings: (AppSettings) -> Unit,
-    onApplyRateToFutureShifts: (Double) -> Unit,
+    onApplyRatesToFutureShifts: (Double, Double) -> Unit,
+    onGoogleSignInClick: () -> Unit,
+    onGoogleSignOutClick: () -> Unit,
+    onGoogleUploadClick: () -> Unit,
+    onGoogleDownloadClick: () -> Unit,
+    onDriveFileExportClick: () -> Unit,
+    onDriveFileImportClick: () -> Unit,
     onRefreshWidgetNow: () -> Unit,
     onRequestNotificationPermission: () -> Unit
 ) {
@@ -400,8 +658,15 @@ private fun ShiftCyberApp(
 
                     Tab.SETTINGS -> SettingsScreen(
                         settings = settings,
+                        isSyncBusy = isSyncBusy,
                         onUpdateSettings = onUpdateSettings,
-                        onApplyRateToFutureShifts = onApplyRateToFutureShifts,
+                        onApplyRatesToFutureShifts = onApplyRatesToFutureShifts,
+                        onGoogleSignInClick = onGoogleSignInClick,
+                        onGoogleSignOutClick = onGoogleSignOutClick,
+                        onGoogleUploadClick = onGoogleUploadClick,
+                        onGoogleDownloadClick = onGoogleDownloadClick,
+                        onDriveFileExportClick = onDriveFileExportClick,
+                        onDriveFileImportClick = onDriveFileImportClick,
                         onRefreshWidgetNow = onRefreshWidgetNow,
                         onRequestNotificationPermission = onRequestNotificationPermission
                     )
@@ -442,6 +707,7 @@ private fun ShiftCyberApp(
             editingShift = editingShift,
             initialDate = editorInitialDate,
             defaultHourlyRate = settings.hourlyRate,
+            defaultDailyRate = settings.dailyRate,
             onDismiss = {
                 showEditor = false
                 editingShift = null
@@ -463,6 +729,7 @@ private fun ShiftCyberApp(
         CycleGeneratorDialog(
             initialAnchorDate = cycleAnchorDate,
             defaultHourlyRate = settings.hourlyRate,
+            defaultDailyRate = settings.dailyRate,
             existingShifts = shifts,
             onDismiss = { showCycleDialog = false },
             onGenerate = { request ->

@@ -1,6 +1,7 @@
 package ru.shiftcyber.domain
 
 import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.data.ShiftExtraItem
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.time.Instant
@@ -24,6 +25,7 @@ object ShiftMath {
     private val fullDateFormatter = DateTimeFormatter.ofPattern("d MMMM yyyy, EEEE", RU_LOCALE)
     private val monthYearFormatter = DateTimeFormatter.ofPattern("LLLL yyyy", RU_LOCALE)
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm", RU_LOCALE)
+    private val dateTimeFormatter = DateTimeFormatter.ofPattern("d MMM HH:mm", RU_LOCALE)
 
     data class PeriodStats(
         val shiftCount: Int,
@@ -38,15 +40,24 @@ object ShiftMath {
     fun hours(shift: ShiftEntity): Double =
         (shift.endMillis - shift.startMillis).coerceAtLeast(0L).toDouble() / MILLIS_PER_HOUR
 
-    /**
-     * Заработок за смену в рублях без вычета перерывов и без промежуточного округления.
-     */
-    fun earnings(shift: ShiftEntity): Double = hours(shift) * shift.hourlyRate
+    fun extraItems(shift: ShiftEntity): List<ShiftExtraItem> =
+        if (shift.isDaily) ShiftJsonCodec.decodeExtras(shift.extrasJson) else emptyList()
+
+    fun extrasTotal(shift: ShiftEntity): Double =
+        extraItems(shift).sumOf { it.total }
 
     /**
-     * Пересечение интервала смены с полуинтервалом [fromMillis, toMillis) в миллисекундах.
-     * Корректно учитывает ночные смены на границе суток, месяца и года.
+     * Заработок за смену в рублях:
+     * - Почасовая (HOURLY): часы × почасовая ставка.
+     * - Дневная (DAILY): 1 день = стоимость дня (dayRate) + сумма всех сдельных доп. действий.
      */
+    fun earnings(shift: ShiftEntity): Double =
+        if (shift.isDaily) {
+            shift.dayRate.coerceAtLeast(0.0) + extrasTotal(shift)
+        } else {
+            hours(shift) * shift.hourlyRate
+        }
+
     fun overlapMillis(shift: ShiftEntity, fromMillis: Long, toMillis: Long): Long {
         if (toMillis <= fromMillis || shift.endMillis <= shift.startMillis) return 0L
         val start = maxOf(shift.startMillis, fromMillis)
@@ -55,10 +66,25 @@ object ShiftMath {
     }
 
     fun hoursInPeriod(shift: ShiftEntity, fromMillis: Long, toMillis: Long): Double =
-        overlapMillis(shift, fromMillis, toMillis).toDouble() / MILLIS_PER_HOUR
+        if (shift.isDaily) {
+            if (shift.startMillis in fromMillis until toMillis) hours(shift) else 0.0
+        } else {
+            overlapMillis(shift, fromMillis, toMillis).toDouble() / MILLIS_PER_HOUR
+        }
 
     fun earningsInPeriod(shift: ShiftEntity, fromMillis: Long, toMillis: Long): Double =
-        hoursInPeriod(shift, fromMillis, toMillis) * shift.hourlyRate
+        if (shift.isDaily) {
+            if (shift.startMillis in fromMillis until toMillis) earnings(shift) else 0.0
+        } else {
+            hoursInPeriod(shift, fromMillis, toMillis) * shift.hourlyRate
+        }
+
+    fun isShiftInPeriod(shift: ShiftEntity, fromMillis: Long, toMillis: Long): Boolean =
+        if (shift.isDaily) {
+            shift.startMillis in fromMillis until toMillis
+        } else {
+            overlapMillis(shift, fromMillis, toMillis) > 0L
+        }
 
     fun calculatePeriodStats(
         shifts: List<ShiftEntity>,
@@ -68,10 +94,10 @@ object ShiftMath {
         if (toMillis <= fromMillis || shifts.isEmpty()) {
             return PeriodStats(0, 0.0, 0.0, 0.0)
         }
-        val overlapping = shifts.filter { overlapMillis(it, fromMillis, toMillis) > 0L }
-        val totalHours = overlapping.sumOf { hoursInPeriod(it, fromMillis, toMillis) }
-        val totalEarnings = overlapping.sumOf { earningsInPeriod(it, fromMillis, toMillis) }
-        val count = overlapping.size
+        val matching = shifts.filter { isShiftInPeriod(it, fromMillis, toMillis) }
+        val totalHours = matching.sumOf { hoursInPeriod(it, fromMillis, toMillis) }
+        val totalEarnings = matching.sumOf { earningsInPeriod(it, fromMillis, toMillis) }
+        val count = matching.size
         val average = if (count == 0) 0.0 else totalEarnings / count
         return PeriodStats(
             shiftCount = count,
@@ -96,6 +122,7 @@ object ShiftMath {
     }
 
     fun canAdjustHours(shift: ShiftEntity, deltaHours: Int): Boolean {
+        if (shift.isDaily) return false
         val newDuration = (shift.endMillis + deltaHours * MILLIS_PER_HOUR) - shift.startMillis
         return newDuration in MIN_DURATION_MILLIS..MAX_DURATION_MILLIS
     }
@@ -157,12 +184,15 @@ object ShiftMath {
     ): List<ShiftEntity> {
         val (from, to) = dayBounds(date, zoneId)
         return shifts
-            .filter { overlapMillis(it, from, to) > 0L }
+            .filter { isShiftInPeriod(it, from, to) }
             .sortedBy { it.startMillis }
     }
 
     fun dateLabel(millis: Long, zoneId: ZoneId = ZoneId.systemDefault()): String =
         Instant.ofEpochMilli(millis).atZone(zoneId).format(shortDateFormatter)
+
+    fun dateTimeLabel(millis: Long, zoneId: ZoneId = ZoneId.systemDefault()): String =
+        Instant.ofEpochMilli(millis).atZone(zoneId).format(dateTimeFormatter)
 
     fun fullDateLabel(date: LocalDate): String =
         date.format(fullDateFormatter).replaceFirstChar { it.titlecase(RU_LOCALE) }
@@ -200,6 +230,15 @@ object ShiftMath {
         }
         val normalized = (hours * 100.0).roundToLong() / 100.0
         return "${DecimalFormat("#,##0.##", symbols).format(normalized)} ч"
+    }
+
+    fun formatQuantity(qty: Double): String {
+        val symbols = DecimalFormatSymbols(RU_LOCALE).apply {
+            groupingSeparator = ' '
+            decimalSeparator = ','
+        }
+        val normalized = (qty * 100.0).roundToLong() / 100.0
+        return DecimalFormat("#,##0.##", symbols).format(normalized)
     }
 
     fun formatRate(rate: Double): String {

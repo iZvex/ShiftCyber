@@ -6,9 +6,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,18 +20,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,7 +50,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.data.ShiftExtraItem
+import ru.shiftcyber.data.ShiftPayType
 import ru.shiftcyber.domain.CycleGenerator
+import ru.shiftcyber.domain.ShiftJsonCodec
 import ru.shiftcyber.domain.ShiftMath
 import java.time.LocalDate
 import java.time.LocalTime
@@ -55,7 +67,9 @@ data class CycleGenerationRequest(
     val daysForward: Int,
     val startHour: Int,
     val startMinute: Int,
+    val payType: String,
     val hourlyRate: Double,
+    val dayRate: Double,
     val title: String,
     val colorKey: String,
     val replaceAutoInWindow: Boolean,
@@ -83,11 +97,15 @@ private fun parseStrictTime(raw: String): LocalTime? {
 private fun parseIsoDate(raw: String): LocalDate? =
     runCatching { LocalDate.parse(raw.trim()) }.getOrNull()
 
+private fun parseNonNegativeDouble(raw: String): Double? =
+    raw.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 }
+
 @Composable
 fun ShiftEditorDialog(
     editingShift: ShiftEntity?,
     initialDate: LocalDate,
     defaultHourlyRate: Double,
+    defaultDailyRate: Double,
     onDismiss: () -> Unit,
     onSave: (ShiftEntity) -> Unit,
     onDelete: ((Long) -> Unit)? = null
@@ -95,6 +113,9 @@ fun ShiftEditorDialog(
     val zoneId = ZoneId.systemDefault()
     val palette = LocalCyberPalette.current
 
+    var payType by remember(editingShift) {
+        mutableStateOf(editingShift?.payType ?: ShiftPayType.HOURLY)
+    }
     var title by remember(editingShift) {
         mutableStateOf(editingShift?.title ?: "Рабочая смена")
     }
@@ -108,27 +129,75 @@ fun ShiftEditorDialog(
     var endText by remember(editingShift) {
         mutableStateOf(editingShift?.let { ShiftMath.timeLabel(it.endMillis, zoneId) } ?: "21:00")
     }
-    var rateText by remember(editingShift, defaultHourlyRate) {
+    var hourlyRateText by remember(editingShift, defaultHourlyRate) {
         mutableStateOf(ShiftMath.formatRate(editingShift?.hourlyRate ?: defaultHourlyRate))
+    }
+    var dayRateText by remember(editingShift, defaultDailyRate) {
+        val initialDayRate = if (editingShift != null && editingShift.isDaily) {
+            editingShift.dayRate
+        } else {
+            defaultDailyRate
+        }
+        mutableStateOf(ShiftMath.formatRate(initialDayRate))
     }
     var colorKey by remember(editingShift) {
         mutableStateOf(editingShift?.colorKey ?: "violet")
     }
+
+    val extraItems = remember(editingShift) {
+        mutableStateListOf<ShiftExtraItem>().apply {
+            if (editingShift != null) {
+                addAll(ShiftJsonCodec.decodeExtras(editingShift.extrasJson))
+            }
+        }
+    }
+    var extraComment by remember { mutableStateOf("") }
+    var extraQtyText by remember { mutableStateOf("") }
+    var extraUnitPriceText by remember { mutableStateOf("") }
+
     var error by remember { mutableStateOf<String?>(null) }
 
-    val previewSummary: String? = remember(dateText, startText, endText, rateText) {
+    val draftExtraPreview: ShiftExtraItem? = remember(extraComment, extraQtyText, extraUnitPriceText) {
+        val qty = parseNonNegativeDouble(extraQtyText) ?: return@remember null
+        val price = parseNonNegativeDouble(extraUnitPriceText) ?: return@remember null
+        if (qty <= 0.0 && price <= 0.0 && extraComment.isBlank()) return@remember null
+        ShiftExtraItem(comment = extraComment.trim(), quantity = qty, unitPrice = price)
+    }
+
+    val previewSummary: String? = remember(
+        payType,
+        dateText,
+        startText,
+        endText,
+        hourlyRateText,
+        dayRateText,
+        extraItems.toList(),
+        draftExtraPreview
+    ) {
         val d = parseIsoDate(dateText) ?: return@remember null
         val st = parseStrictTime(startText) ?: return@remember null
         val et = parseStrictTime(endText) ?: return@remember null
         if (st == et) return@remember null
-        val r = rateText.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it >= 0.0 }
-            ?: return@remember null
         val startMillis = d.atTime(st).atZone(zoneId).toInstant().toEpochMilli()
         val endDate = if (et.isAfter(st)) d else d.plusDays(1)
         val endMillis = endDate.atTime(et).atZone(zoneId).toInstant().toEpochMilli()
-        val temp = ShiftEntity(startMillis = startMillis, endMillis = endMillis, hourlyRate = r)
-        val nightLabel = if (endDate != d && et != LocalTime.MIDNIGHT) "Ночная смена (+1 дн.) · " else ""
-        "$nightLabel${ShiftMath.formatHours(ShiftMath.hours(temp))} · ${ShiftMath.formatCurrency(ShiftMath.earnings(temp))}"
+
+        if (payType == ShiftPayType.DAILY) {
+            val baseDay = parseNonNegativeDouble(dayRateText) ?: return@remember null
+            val allExtras = extraItems.toList() + listOfNotNull(draftExtraPreview)
+            val extrasSum = allExtras.sumOf { it.total }
+            val total = baseDay + extrasSum
+            if (extrasSum > 0.0) {
+                "Дневная: ${ShiftMath.formatCurrency(baseDay)} + доп. ${ShiftMath.formatCurrency(extrasSum)} = ${ShiftMath.formatCurrency(total)}"
+            } else {
+                "Дневная смена (1 день): ${ShiftMath.formatCurrency(total)}"
+            }
+        } else {
+            val hr = parseNonNegativeDouble(hourlyRateText) ?: return@remember null
+            val temp = ShiftEntity(startMillis = startMillis, endMillis = endMillis, hourlyRate = hr)
+            val nightLabel = if (endDate != d && et != LocalTime.MIDNIGHT) "Ночная (+1 дн.) · " else ""
+            "$nightLabel${ShiftMath.formatHours(ShiftMath.hours(temp))} · ${ShiftMath.formatCurrency(ShiftMath.earnings(temp))}"
+        }
     }
 
     AlertDialog(
@@ -138,7 +207,7 @@ fun ShiftEditorDialog(
         textContentColor = MaterialTheme.colorScheme.onSurface,
         title = {
             Text(
-                text = if (editingShift == null) "Новая смена" else "Редактировать смену",
+                text = if (editingShift == null) "Новая смена" else "Изменить смену",
                 fontWeight = FontWeight.Bold
             )
         },
@@ -147,6 +216,24 @@ fun ShiftEditorDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                Text(
+                    "Тип расчёта смены:",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = payType == ShiftPayType.HOURLY,
+                        onClick = { payType = ShiftPayType.HOURLY; error = null },
+                        label = { Text("Почасовая") }
+                    )
+                    FilterChip(
+                        selected = payType == ShiftPayType.DAILY,
+                        onClick = { payType = ShiftPayType.DAILY; error = null },
+                        label = { Text("Дневная (за день)") }
+                    )
+                }
+
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it; error = null },
@@ -191,14 +278,129 @@ fun ShiftEditorDialog(
                     )
                 }
 
-                OutlinedTextField(
-                    value = rateText,
-                    onValueChange = { rateText = it; error = null },
-                    label = { Text("Почасовая ставка (₽/час)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-                )
+                if (payType == ShiftPayType.HOURLY) {
+                    OutlinedTextField(
+                        value = hourlyRateText,
+                        onValueChange = { hourlyRateText = it; error = null },
+                        label = { Text("Почасовая ставка (₽/час)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = dayRateText,
+                        onValueChange = { dayRateText = it; error = null },
+                        label = { Text("Стоимость дня (1 день = ₽)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    Text(
+                        "Дополнение к заработку",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        "Комментарий → сколько сделано → сумма за 1 действие",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    extraItems.forEachIndexed { idx, item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = item.comment.ifBlank { "Доп. действие #${idx + 1}" },
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "${ShiftMath.formatQuantity(item.quantity)} × ${ShiftMath.formatCurrency(item.unitPrice)} = +${ShiftMath.formatCurrency(item.total)}",
+                                    fontSize = 11.sp,
+                                    color = palette.green
+                                )
+                            }
+                            IconButton(
+                                onClick = { extraItems.removeAt(idx) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Close,
+                                    contentDescription = "Удалить позицию",
+                                    tint = palette.danger,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = extraComment,
+                        onValueChange = { extraComment = it; error = null },
+                        label = { Text("Комментарий (что сделано)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = extraQtyText,
+                            onValueChange = { extraQtyText = it; error = null },
+                            label = { Text("Сколько сделано") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
+                        OutlinedTextField(
+                            value = extraUnitPriceText,
+                            onValueChange = { extraUnitPriceText = it; error = null },
+                            label = { Text("За 1 действие (₽)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val qty = parseNonNegativeDouble(extraQtyText)
+                            val unit = parseNonNegativeDouble(extraUnitPriceText)
+                            if (qty == null || qty <= 0.0 || unit == null || unit <= 0.0) {
+                                error = "Для доп. заработка укажи количество (> 0) и сумму за 1 действие (> 0)."
+                            } else {
+                                extraItems.add(
+                                    ShiftExtraItem(
+                                        comment = extraComment.trim(),
+                                        quantity = qty,
+                                        unitPrice = unit
+                                    )
+                                )
+                                extraComment = ""
+                                extraQtyText = ""
+                                extraUnitPriceText = ""
+                                error = null
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 8.dp, horizontal = 12.dp)
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Добавить действие к смене", fontSize = 12.sp)
+                    }
+                }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -243,8 +445,9 @@ fun ShiftEditorDialog(
                 }
 
                 if (previewSummary != null) {
+                    Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Итог: $previewSummary",
+                        text = previewSummary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = palette.green
@@ -293,11 +496,6 @@ fun ShiftEditorDialog(
                         error = "Время начала и окончания не должны совпадать."
                         return@Button
                     }
-                    val parsedRate = rateText.trim().replace(',', '.').toDoubleOrNull()
-                    if (parsedRate == null || parsedRate < 0.0 || !parsedRate.isFinite()) {
-                        error = "Укажи корректную ставку в рублях (0 или больше)."
-                        return@Button
-                    }
 
                     val startMillis = parsedDate.atTime(parsedStart).atZone(zoneId).toInstant().toEpochMilli()
                     val endDate = if (parsedEnd.isAfter(parsedStart)) parsedDate else parsedDate.plusDays(1)
@@ -307,18 +505,68 @@ fun ShiftEditorDialog(
                         return@Button
                     }
 
-                    onSave(
-                        ShiftEntity(
-                            id = editingShift?.id ?: 0L,
-                            startMillis = startMillis,
-                            endMillis = endMillis,
-                            title = title.trim().ifBlank { "Рабочая смена" },
-                            hourlyRate = parsedRate,
-                            breakMinutes = editingShift?.breakMinutes ?: 0,
-                            colorKey = colorKey,
-                            isManual = true
+                    if (payType == ShiftPayType.DAILY) {
+                        val parsedDayRate = parseNonNegativeDouble(dayRateText)
+                        if (parsedDayRate == null) {
+                            error = "Укажи корректную стоимость дневной смены в рублях (0 или больше)."
+                            return@Button
+                        }
+
+                        val hasDraftFields = extraComment.isNotBlank() ||
+                            extraQtyText.isNotBlank() ||
+                            extraUnitPriceText.isNotBlank()
+                        val finalExtras = extraItems.toMutableList()
+                        if (hasDraftFields) {
+                            val qty = parseNonNegativeDouble(extraQtyText)
+                            val unit = parseNonNegativeDouble(extraUnitPriceText)
+                            if (qty == null || qty <= 0.0 || unit == null || unit <= 0.0) {
+                                error = "Заполни количество и сумму за 1 действие (или очисти незавершённую строку доп. заработка)."
+                                return@Button
+                            }
+                            finalExtras += ShiftExtraItem(
+                                comment = extraComment.trim(),
+                                quantity = qty,
+                                unitPrice = unit
+                            )
+                        }
+
+                        onSave(
+                            ShiftEntity(
+                                id = editingShift?.id ?: 0L,
+                                startMillis = startMillis,
+                                endMillis = endMillis,
+                                title = title.trim().ifBlank { "Дневная смена" },
+                                hourlyRate = editingShift?.hourlyRate ?: defaultHourlyRate,
+                                breakMinutes = editingShift?.breakMinutes ?: 0,
+                                colorKey = colorKey,
+                                isManual = true,
+                                payType = ShiftPayType.DAILY,
+                                dayRate = parsedDayRate,
+                                extrasJson = ShiftJsonCodec.encodeExtras(finalExtras)
+                            )
                         )
-                    )
+                    } else {
+                        val parsedHourly = parseNonNegativeDouble(hourlyRateText)
+                        if (parsedHourly == null) {
+                            error = "Укажи корректную почасовую ставку в рублях (0 или больше)."
+                            return@Button
+                        }
+                        onSave(
+                            ShiftEntity(
+                                id = editingShift?.id ?: 0L,
+                                startMillis = startMillis,
+                                endMillis = endMillis,
+                                title = title.trim().ifBlank { "Рабочая смена" },
+                                hourlyRate = parsedHourly,
+                                breakMinutes = editingShift?.breakMinutes ?: 0,
+                                colorKey = colorKey,
+                                isManual = true,
+                                payType = ShiftPayType.HOURLY,
+                                dayRate = editingShift?.dayRate ?: 0.0,
+                                extrasJson = "[]"
+                            )
+                        )
+                    }
                 }
             ) {
                 Text("Сохранить")
@@ -336,6 +584,7 @@ fun ShiftEditorDialog(
 fun CycleGeneratorDialog(
     initialAnchorDate: LocalDate,
     defaultHourlyRate: Double,
+    defaultDailyRate: Double,
     existingShifts: List<ShiftEntity>,
     onDismiss: () -> Unit,
     onGenerate: (CycleGenerationRequest) -> Unit
@@ -343,6 +592,7 @@ fun CycleGeneratorDialog(
     val zoneId = ZoneId.systemDefault()
     val palette = LocalCyberPalette.current
 
+    var payType by remember { mutableStateOf(ShiftPayType.HOURLY) }
     var title by remember { mutableStateOf("Рабочая смена") }
     var dateText by remember(initialAnchorDate) { mutableStateOf(initialAnchorDate.toString()) }
     var workDaysText by remember { mutableStateOf("4") }
@@ -350,8 +600,11 @@ fun CycleGeneratorDialog(
     var shiftHoursText by remember { mutableStateOf("12") }
     var daysForwardText by remember { mutableStateOf("60") }
     var startTimeText by remember { mutableStateOf("09:00") }
-    var rateText by remember(defaultHourlyRate) {
+    var hourlyRateText by remember(defaultHourlyRate) {
         mutableStateOf(ShiftMath.formatRate(defaultHourlyRate))
+    }
+    var dayRateText by remember(defaultDailyRate) {
+        mutableStateOf(ShiftMath.formatRate(defaultDailyRate))
     }
     var replaceAuto by remember { mutableStateOf(true) }
     var overwriteManual by remember { mutableStateOf(false) }
@@ -372,10 +625,23 @@ fun CycleGeneratorDialog(
                 verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
                 Text(
-                    "Задай чередование «N рабочих / M выходных» (например, 4/2 или 2/2). Ручные смены по умолчанию защищены от перезаписи.",
+                    "Задай чередование «N рабочих / M выходных» (например, 4/2 или 2/2). Ручные смены по умолчанию защищены.",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = payType == ShiftPayType.HOURLY,
+                        onClick = { payType = ShiftPayType.HOURLY; pendingManualConfirmCount = null },
+                        label = { Text("Почасовые") }
+                    )
+                    FilterChip(
+                        selected = payType == ShiftPayType.DAILY,
+                        onClick = { payType = ShiftPayType.DAILY; pendingManualConfirmCount = null },
+                        label = { Text("Дневные (за день)") }
+                    )
+                }
 
                 OutlinedTextField(
                     value = title,
@@ -439,14 +705,25 @@ fun CycleGeneratorDialog(
                         modifier = Modifier.weight(1f),
                         singleLine = true
                     )
-                    OutlinedTextField(
-                        value = rateText,
-                        onValueChange = { rateText = it; error = null; pendingManualConfirmCount = null },
-                        label = { Text("Ставка ₽/ч") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-                    )
+                    if (payType == ShiftPayType.HOURLY) {
+                        OutlinedTextField(
+                            value = hourlyRateText,
+                            onValueChange = { hourlyRateText = it; error = null; pendingManualConfirmCount = null },
+                            label = { Text("Ставка ₽/ч") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
+                    } else {
+                        OutlinedTextField(
+                            value = dayRateText,
+                            onValueChange = { dayRateText = it; error = null; pendingManualConfirmCount = null },
+                            label = { Text("За 1 день (₽)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
+                    }
                 }
 
                 Row(
@@ -459,10 +736,7 @@ fun CycleGeneratorDialog(
                         checked = replaceAuto,
                         onCheckedChange = { replaceAuto = it; pendingManualConfirmCount = null }
                     )
-                    Text(
-                        "Обновить прежние авто-смены в этом периоде",
-                        fontSize = 12.sp
-                    )
+                    Text("Обновить прежние авто-смены в этом периоде", fontSize = 12.sp)
                 }
 
                 Row(
@@ -475,10 +749,7 @@ fun CycleGeneratorDialog(
                         checked = overwriteManual,
                         onCheckedChange = { overwriteManual = it; pendingManualConfirmCount = null }
                     )
-                    Text(
-                        "Заменять ручные смены при совпадении",
-                        fontSize = 12.sp
-                    )
+                    Text("Заменять ручные смены при совпадении", fontSize = 12.sp)
                 }
 
                 if (pendingManualConfirmCount != null) {
@@ -528,9 +799,18 @@ fun CycleGeneratorDialog(
                         error = "Укажи время начала смены (например, 09:00 или 20:00)."
                         return@Button
                     }
-                    val rate = rateText.trim().replace(',', '.').toDoubleOrNull()
-                    if (rate == null || rate < 0.0 || !rate.isFinite()) {
-                        error = "Укажи корректную почасовую ставку (0 или больше)."
+                    val hr = if (payType == ShiftPayType.HOURLY) {
+                        parseNonNegativeDouble(hourlyRateText)
+                    } else {
+                        defaultHourlyRate
+                    }
+                    val dr = if (payType == ShiftPayType.DAILY) {
+                        parseNonNegativeDouble(dayRateText)
+                    } else {
+                        0.0
+                    }
+                    if (hr == null || dr == null) {
+                        error = "Укажи корректную ставку в рублях (0 или больше)."
                         return@Button
                     }
 
@@ -542,7 +822,9 @@ fun CycleGeneratorDialog(
                         shiftDurationHours = shiftHours,
                         startHour = startTime.hour,
                         startMinute = startTime.minute,
-                        hourlyRate = rate,
+                        hourlyRate = hr,
+                        dayRate = dr,
+                        payType = payType,
                         title = title.trim().ifBlank { "Рабочая смена" },
                         zoneId = zoneId
                     )
@@ -566,7 +848,9 @@ fun CycleGeneratorDialog(
                             daysForward = daysForward,
                             startHour = startTime.hour,
                             startMinute = startTime.minute,
-                            hourlyRate = rate,
+                            payType = payType,
+                            hourlyRate = hr,
+                            dayRate = dr,
                             title = title.trim().ifBlank { "Рабочая смена" },
                             colorKey = "violet",
                             replaceAutoInWindow = replaceAuto,

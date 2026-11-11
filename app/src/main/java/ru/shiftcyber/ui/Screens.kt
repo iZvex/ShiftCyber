@@ -2,10 +2,14 @@ package ru.shiftcyber.ui
 
 import android.Manifest
 import android.appwidget.AppWidgetManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,21 +42,29 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.CloudSync
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EventAvailable
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Schedule
-import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Today
 import androidx.compose.material.icons.rounded.Widgets
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -87,6 +99,8 @@ import androidx.core.content.ContextCompat
 import ru.shiftcyber.data.AppSettings
 import ru.shiftcyber.data.ShiftEntity
 import ru.shiftcyber.domain.ShiftMath
+import ru.shiftcyber.sync.GoogleDriveSyncManager
+import ru.shiftcyber.widget.ShiftCompactWidgetProvider
 import ru.shiftcyber.widget.ShiftWidgetProvider
 import java.time.LocalDate
 import java.time.YearMonth
@@ -185,8 +199,13 @@ fun HomeScreen(
                                 fontSize = 13.sp
                             )
                             Spacer(Modifier.height(4.dp))
+                            val modeLabel = if (nextShift.isDaily) {
+                                "Дневная смена"
+                            } else {
+                                ShiftMath.formatHours(ShiftMath.hours(nextShift))
+                            }
                             Text(
-                                "${ShiftMath.formatHours(ShiftMath.hours(nextShift))} · ${ShiftMath.formatCurrency(ShiftMath.earnings(nextShift))}",
+                                "$modeLabel · ${ShiftMath.formatCurrency(ShiftMath.earnings(nextShift))}",
                                 color = palette.green,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 13.sp
@@ -303,11 +322,11 @@ fun CalendarScreen(
     val (monthStart, monthEnd) = ShiftMath.monthBounds(displayedMonth, zoneId)
     val monthStats = ShiftMath.calculatePeriodStats(shifts, monthStart, monthEnd)
     val monthShifts = remember(shifts, monthStart, monthEnd) {
-        shifts.filter { ShiftMath.overlapMillis(it, monthStart, monthEnd) > 0L }
+        shifts.filter { ShiftMath.isShiftInPeriod(it, monthStart, monthEnd) }
     }
 
     val daysInMonth = displayedMonth.lengthOfMonth()
-    val firstDayOffset = displayedMonth.atDay(1).dayOfWeek.value - 1 // Monday = 0 .. Sunday = 6
+    val firstDayOffset = displayedMonth.atDay(1).dayOfWeek.value - 1
 
     val startingByDay = remember(shifts, displayedMonth, zoneId) {
         shifts
@@ -441,16 +460,24 @@ fun CalendarScreen(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         if (hasStartShift) {
+                                            val allDaily = dayStartingShifts.all { it.isDaily }
                                             Spacer(Modifier.height(2.dp))
                                             Box(
                                                 Modifier
                                                     .size(6.dp)
-                                                    .background(palette.purple, CircleShape)
+                                                    .background(
+                                                        if (allDaily) palette.green else palette.purple,
+                                                        CircleShape
+                                                    )
                                             )
                                             Text(
-                                                text = ShiftMath.formatHours(
-                                                    dayStartingShifts.sumOf { ShiftMath.hours(it) }
-                                                ),
+                                                text = if (allDaily) {
+                                                    "дн."
+                                                } else {
+                                                    ShiftMath.formatHours(
+                                                        dayStartingShifts.sumOf { ShiftMath.hours(it) }
+                                                    )
+                                                },
                                                 fontSize = 8.sp,
                                                 color = MaterialTheme.colorScheme.secondary,
                                                 maxLines = 1,
@@ -521,13 +548,13 @@ fun CalendarScreen(
                         )
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            if (selectedDayStats.totalHours > 0.0) {
-                                "Отработано в эти сутки: ${ShiftMath.formatHours(selectedDayStats.totalHours)} · ${ShiftMath.formatCurrency(selectedDayStats.totalEarnings)}"
+                            if (selectedDayStats.shiftCount > 0) {
+                                "${pluralizeShifts(selectedDayStats.shiftCount)} · ${ShiftMath.formatHours(selectedDayStats.totalHours)} · ${ShiftMath.formatCurrency(selectedDayStats.totalEarnings)}"
                             } else {
                                 "Свободный день (выходной)"
                             },
                             fontSize = 12.sp,
-                            color = if (selectedDayStats.totalHours > 0.0) palette.green else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (selectedDayStats.shiftCount > 0) palette.green else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     IconButton(onClick = { onAddForDate(selectedDate) }) {
@@ -722,7 +749,7 @@ fun StatsScreen(shifts: List<ShiftEntity>) {
                 ) {
                     OutlinedButton(onClick = { dayOffset-- }) {
                         Icon(Icons.Rounded.ChevronLeft, contentDescription = null)
-                        Text("Вчера / −1")
+                        Text("−1 день")
                     }
                     if (dayOffset != 0) {
                         TextButton(onClick = { dayOffset = 0 }) {
@@ -763,8 +790,8 @@ fun StatsScreen(shifts: List<ShiftEntity>) {
         item {
             MetricCard(
                 title = "ЗАРАБОТОК ЗА ПЕРИОД",
-                value = ShiftMath.formatCurrency(stats.totalEarnings, alwaysShowDecimals = false),
-                subtitle = "Без вычета перерывов · точный расчёт по часам",
+                value = ShiftMath.formatCurrency(stats.totalEarnings),
+                subtitle = "Учитываются почасовые, дневные смены и доп. действия",
                 icon = Icons.Rounded.AccountBalanceWallet,
                 accent = palette.green,
                 modifier = Modifier.fillMaxWidth()
@@ -774,7 +801,7 @@ fun StatsScreen(shifts: List<ShiftEntity>) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MetricCard(
-                    title = "ОТРАБОТАНО ЧАСОВ",
+                    title = "ЧАСЫ В ПЕРИОДЕ",
                     value = ShiftMath.formatHours(stats.totalHours),
                     icon = Icons.Rounded.Schedule,
                     accent = palette.cyan,
@@ -839,32 +866,82 @@ fun StatsScreen(shifts: List<ShiftEntity>) {
                 )
             }
         }
-
-        item {
-            Text(
-                "Ночные смены на границе суток и месяцев автоматически распределяются пропорционально фактически отработанному времени в каждом периоде.",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
+
+private data class FaqItem(
+    val question: String,
+    val answer: String
+)
+
+private val FunctionalFaqItems = listOf(
+    FaqItem(
+        question = "Как устроен главный экран?",
+        answer = "На вкладке «Главная» отображается текущая идущая или ближайшая будущая смена, сводка заработка и часов за сегодня и за текущий месяц, а также список ближайших смен. Нажатие по карточке смены открывает её редактирование."
+    ),
+    FaqItem(
+        question = "Чем отличается почасовая смена от дневной?",
+        answer = "• Почасовая смена: заработок считается по формуле «часы × почасовая ставка», а ночные смены через полночь (например, 20:00–08:00) автоматически учитывают переход на следующие сутки.\n• Дневная смена: 1 выход (день) равен фиксированной стоимости дня независимо от длительности в часах. Тип смены можно выбрать при создании или переключить при изменении любой смены."
+    ),
+    FaqItem(
+        question = "Как добавлять дополнительный заработок к дневной смене?",
+        answer = "Открой или создай смену с типом «Дневная (за день)». В блоке «Дополнение к заработку» заполни поля: «Комментарий» (что сделано), «Сколько сделано» и «За 1 действие (₽)», затем нажми «Добавить действие к смене». Можно добавить несколько разных позиций — все они автоматически прибавятся к стоимости дня."
+    ),
+    FaqItem(
+        question = "Как быстро менять часы и редактировать смены?",
+        answer = "В любой карточке почасовой смены есть кнопки «−1 ч» и «+1 ч» для быстрой корректировки времени окончания (например, при задержке на смене). Чтобы изменить дату, точное время, ставку, тип смены или удалить смену, нажми на саму карточку или значок карандаша."
+    ),
+    FaqItem(
+        question = "Как пользоваться календарём и генератором цикла 4/2?",
+        answer = "Во вкладке «Календарь» нажми на любой день, чтобы увидеть смены и доход за эти сутки. Кнопка «Цикл 4/2...» открывает генератор повторяющегося графика «N рабочих / M выходных» (как для почасовых, так и для дневных смен). Повторный запуск не создаёт дубликатов, а смены, созданные или изменённые вручную, защищены от случайной перезаписи."
+    ),
+    FaqItem(
+        question = "Как смотреть статистику за день, месяц или произвольный период?",
+        answer = "Во вкладке «Статистика» переключай режимы вверху экрана: «Месяц» (со стрелками переключения месяцев и сравнением с прошлым месяцем), «День», «Период» (выбор любых дат «С» и «По») или «Всё время»."
+    ),
+    FaqItem(
+        question = "Как работает синхронизация через сервисы Google?",
+        answer = "График можно синхронизировать с облаком Google двумя способами: через привязку аккаунта Google (автоматическое и ручное сохранение в облачную папку приложения на Google Диске) либо через быстрый обмен файлом напрямую с приложением Google Диск на смартфоне — удобно для переноса графика между устройствами."
+    ),
+    FaqItem(
+        question = "Как работают напоминания о сменах?",
+        answer = "Приложение заранее предупреждает о предстоящем выходе на работу: за 24 часа (накануне смены) и за 1 час до начала смены. Если смена перенесена или удалена из графика, старое напоминание отменяется автоматически."
+    ),
+    FaqItem(
+        question = "Как добавить виджет расписания на рабочий стол?",
+        answer = "Доступны два виджета: «Shift Cyber — Расписание» (4×2) и «Shift Cyber — Мини» (2×2). Их можно закрепить одной кнопкой из приложения или выбрать в системном каталоге виджетов (на оболочке Xiaomi HyperOS сторонние виджеты находятся в меню «Виджеты» → «Приложения с несколькими виджетами» → «Все» → «Виджеты Android»). Нажатие на виджет открывает приложение."
+    )
+)
 
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    isSyncBusy: Boolean,
     onUpdateSettings: (AppSettings) -> Unit,
-    onApplyRateToFutureShifts: (Double) -> Unit,
+    onApplyRatesToFutureShifts: (Double, Double) -> Unit,
+    onGoogleSignInClick: () -> Unit,
+    onGoogleSignOutClick: () -> Unit,
+    onGoogleUploadClick: () -> Unit,
+    onGoogleDownloadClick: () -> Unit,
+    onDriveFileExportClick: () -> Unit,
+    onDriveFileImportClick: () -> Unit,
     onRefreshWidgetNow: () -> Unit,
     onRequestNotificationPermission: () -> Unit
 ) {
     val context = LocalContext.current
     val palette = LocalCyberPalette.current
 
-    var rateInput by remember(settings.hourlyRate) {
+    var hourlyRateInput by remember(settings.hourlyRate) {
         mutableStateOf(ShiftMath.formatRate(settings.hourlyRate))
     }
+    var dailyRateInput by remember(settings.dailyRate) {
+        mutableStateOf(ShiftMath.formatRate(settings.dailyRate))
+    }
     var rateError by remember { mutableStateOf<String?>(null) }
+    var showSha1Helper by remember { mutableStateOf(false) }
+    var expandedFaqIndex by rememberSaveable { mutableIntStateOf(-1) }
+
+    val sha1Fingerprint = remember(context) { GoogleDriveSyncManager.getAppSigningSha1(context) }
 
     val hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(
@@ -884,9 +961,10 @@ fun SettingsScreen(
     ) {
         item {
             Text("Настройки", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-            Text("Ставка, уведомления, тема и виджет", color = MaterialTheme.colorScheme.secondary)
+            Text("Ставки, синхронизация Google, виджеты и FAQ", color = MaterialTheme.colorScheme.secondary)
         }
 
+        // 1. Ставки (Почасовая + Дневная)
         item {
             NeonCard(Modifier.fillMaxWidth(), accent = palette.green) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -899,23 +977,33 @@ fun SettingsScreen(
                         )
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Почасовая ставка", fontWeight = FontWeight.SemiBold)
+                            Text("Ставки по умолчанию", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Текущая ставка по умолчанию: ${ShiftMath.formatCurrency(settings.hourlyRate)}/ч",
+                                "Час: ${ShiftMath.formatCurrency(settings.hourlyRate)} · День: ${ShiftMath.formatCurrency(settings.dailyRate)}",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
-                    OutlinedTextField(
-                        value = rateInput,
-                        onValueChange = { rateInput = it; rateError = null },
-                        label = { Text("Ставка по умолчанию (₽/час)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = hourlyRateInput,
+                            onValueChange = { hourlyRateInput = it; rateError = null },
+                            label = { Text("Почасовая (₽/ч)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
+                        OutlinedTextField(
+                            value = dailyRateInput,
+                            onValueChange = { dailyRateInput = it; rateError = null },
+                            label = { Text("Дневная (₽/день)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                        )
+                    }
 
                     if (rateError != null) {
                         Text(rateError!!, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
@@ -924,12 +1012,13 @@ fun SettingsScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                val parsed = rateInput.trim().replace(',', '.').toDoubleOrNull()
-                                if (parsed == null || parsed < 0.0 || !parsed.isFinite()) {
-                                    rateError = "Введи неотрицательное число (например, 350)."
+                                val hr = hourlyRateInput.trim().replace(',', '.').toDoubleOrNull()
+                                val dr = dailyRateInput.trim().replace(',', '.').toDoubleOrNull()
+                                if (hr == null || hr < 0.0 || !hr.isFinite() || dr == null || dr < 0.0 || !dr.isFinite()) {
+                                    rateError = "Укажи неотрицательные суммы для обеих ставок."
                                 } else {
-                                    onUpdateSettings(settings.copy(hourlyRate = parsed))
-                                    Toast.makeText(context, "Ставка сохранена", Toast.LENGTH_SHORT).show()
+                                    onUpdateSettings(settings.copy(hourlyRate = hr, dailyRate = dr))
+                                    Toast.makeText(context, "Ставки сохранены", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             modifier = Modifier.weight(1f)
@@ -938,13 +1027,14 @@ fun SettingsScreen(
                         }
                         OutlinedButton(
                             onClick = {
-                                val parsed = rateInput.trim().replace(',', '.').toDoubleOrNull()
-                                if (parsed == null || parsed < 0.0 || !parsed.isFinite()) {
-                                    rateError = "Введи неотрицательное число."
+                                val hr = hourlyRateInput.trim().replace(',', '.').toDoubleOrNull()
+                                val dr = dailyRateInput.trim().replace(',', '.').toDoubleOrNull()
+                                if (hr == null || hr < 0.0 || !hr.isFinite() || dr == null || dr < 0.0 || !dr.isFinite()) {
+                                    rateError = "Укажи неотрицательные суммы."
                                 } else {
-                                    onUpdateSettings(settings.copy(hourlyRate = parsed))
-                                    onApplyRateToFutureShifts(parsed)
-                                    Toast.makeText(context, "Ставка обновлена для будущих смен", Toast.LENGTH_SHORT).show()
+                                    onUpdateSettings(settings.copy(hourlyRate = hr, dailyRate = dr))
+                                    onApplyRatesToFutureShifts(hr, dr)
+                                    Toast.makeText(context, "Ставки применены к будущим сменам", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             modifier = Modifier.weight(1f)
@@ -956,6 +1046,162 @@ fun SettingsScreen(
             }
         }
 
+        // 2. Синхронизация через сервисы Google
+        item {
+            NeonCard(Modifier.fillMaxWidth(), accent = palette.cyan) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (settings.googleAccountEmail.isNotBlank()) Icons.Rounded.CloudDone else Icons.Rounded.CloudSync,
+                            contentDescription = null,
+                            tint = palette.cyan,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Синхронизация Google", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = if (settings.googleAccountEmail.isNotBlank()) {
+                                    "Аккаунт: ${settings.googleAccountEmail}"
+                                } else {
+                                    "Облачное хранение в Google Диске и автобэкап Android"
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (settings.lastSyncMillis > 0L) {
+                                Text(
+                                    text = "Последняя синхронизация: ${ShiftMath.dateTimeLabel(settings.lastSyncMillis)}",
+                                    fontSize = 11.sp,
+                                    color = palette.green
+                                )
+                            }
+                        }
+                        if (isSyncBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        }
+                    }
+
+                    if (settings.googleAccountEmail.isBlank()) {
+                        Button(
+                            onClick = onGoogleSignInClick,
+                            enabled = !isSyncBusy,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.CloudSync, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Войти через Google")
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = onGoogleUploadClick,
+                                enabled = !isSyncBusy,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("В облако", fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = onGoogleDownloadClick,
+                                enabled = !isSyncBusy,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("Из облака", fontSize = 12.sp)
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Автосинхронизация", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "Обновлять копию в Google Cloud при изменениях",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = settings.autoGoogleSync,
+                                onCheckedChange = { enabled ->
+                                    onUpdateSettings(settings.copy(autoGoogleSync = enabled))
+                                }
+                            )
+                        }
+
+                        TextButton(
+                            onClick = onGoogleSignOutClick,
+                            enabled = !isSyncBusy
+                        ) {
+                            Text("Отключить аккаунт Google", fontSize = 12.sp)
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    Text(
+                        "Прямой обмен через приложение Google Диск:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onDriveFileExportClick,
+                            enabled = !isSyncBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Сохранить в Диск", fontSize = 12.sp)
+                        }
+                        OutlinedButton(
+                            onClick = onDriveFileImportClick,
+                            enabled = !isSyncBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Загрузить с Диска", fontSize = 12.sp)
+                        }
+                    }
+
+                    TextButton(
+                        onClick = { showSha1Helper = !showSha1Helper },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            if (showSha1Helper) "Скрыть данные OAuth SHA-1" else "Показать SHA-1 для Google Cloud Console",
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    AnimatedVisibility(visible = showSha1Helper) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Package: ru.shiftcyber", fontSize = 11.sp)
+                                Text("SHA-1: $sha1Fingerprint", fontSize = 10.sp, color = MaterialTheme.colorScheme.secondary)
+                            }
+                            IconButton(
+                                onClick = {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.setPrimaryClip(ClipData.newPlainText("SHA-1", sha1Fingerprint))
+                                    Toast.makeText(context, "SHA-1 скопирован", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Icon(Icons.Rounded.ContentCopy, contentDescription = "Скопировать SHA-1", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Тема оформления
         item {
             NeonCard(Modifier.fillMaxWidth(), accent = palette.purple) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -984,6 +1230,7 @@ fun SettingsScreen(
             }
         }
 
+        // 4. Уведомления
         item {
             NeonCard(Modifier.fillMaxWidth(), accent = palette.cyan) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1019,11 +1266,7 @@ fun SettingsScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Накануне смены", fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                "За 24 часа до начала смены",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text("За 24 часа до начала смены", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = settings.notifyDayBefore,
@@ -1036,11 +1279,7 @@ fun SettingsScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("В день смены", fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                "За 1 час до начала смены",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text("За 1 час до начала смены", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = settings.notifySameDay,
@@ -1053,6 +1292,7 @@ fun SettingsScreen(
             }
         }
 
+        // 5. Виджеты рабочего стола
         item {
             NeonCard(Modifier.fillMaxWidth(), accent = palette.cyan) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1065,9 +1305,9 @@ fun SettingsScreen(
                         )
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Виджет Shift Cyber", fontWeight = FontWeight.SemiBold)
+                            Text("Виджеты Shift Cyber", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Показывает текущую или ближайшую смену, часы и заработок в ₽",
+                                "Доступны в каталоге виджетов Android (4×2 и Мини 2×2) и по кнопкам ниже",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1098,85 +1338,129 @@ fun SettingsScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                try {
-                                    val manager = AppWidgetManager.getInstance(context)
-                                    val provider = ComponentName(context, ShiftWidgetProvider::class.java)
-                                    if (!manager.isRequestPinAppWidgetSupported) {
-                                        Toast.makeText(
-                                            context,
-                                            "Лаунчер не поддерживает автоматическое закрепление. Добавь виджет через меню рабочего стола.",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    } else {
-                                        val sent = manager.requestPinAppWidget(provider, null, null)
-                                        Toast.makeText(
-                                            context,
-                                            if (sent) {
-                                                "Запрос отправлен лаунчеру. Подтверди добавление виджета."
-                                            } else {
-                                                "Лаунчер отклонил запрос. Попробуй через меню виджетов."
-                                            },
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                } catch (e: Exception) {
-                                    Toast.makeText(
-                                        context,
-                                        "Ошибка добавления: ${e.message ?: "неизвестная ошибка"}",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
+                                requestPinWidget(context, ComponentName(context, ShiftWidgetProvider::class.java))
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Rounded.Add, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Закрепить")
+                            Text("Виджет 4×2", fontSize = 12.sp)
                         }
-
                         OutlinedButton(
                             onClick = {
-                                onRefreshWidgetNow()
-                                Toast.makeText(context, "Данные виджета обновлены", Toast.LENGTH_SHORT).show()
+                                requestPinWidget(context, ComponentName(context, ShiftCompactWidgetProvider::class.java))
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Обновить")
+                            Text("Мини 2×2", fontSize = 12.sp)
                         }
                     }
 
-                    Text(
-                        "На Xiaomi HyperOS подтверди системное окно закрепления или открой каталог виджетов Android.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        item {
-            NeonCard(Modifier.fillMaxWidth(), accent = MaterialTheme.colorScheme.secondary) {
-                Row(verticalAlignment = Alignment.Top) {
-                    Icon(
-                        Icons.Rounded.Storage,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text("Локальная база данных", fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            "Смены и настройки хранятся локально в Room (shift-cyber.db, схема v1). При установке новой версии APK поверх текущей все записи сохраняются.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    OutlinedButton(
+                        onClick = {
+                            onRefreshWidgetNow()
+                            Toast.makeText(context, "Виджеты обновлены", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Обновить данные виджетов")
                     }
                 }
             }
         }
+
+        // 6. FAQ по функционалу (вместо описания БД; без описания раздела настроек)
+        item {
+            NeonCard(Modifier.fillMaxWidth(), accent = palette.purple) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.HelpOutline,
+                            contentDescription = null,
+                            tint = palette.purple,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("FAQ — Функции приложения", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(
+                                "Нажми на вопрос, чтобы открыть краткую инструкцию",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(2.dp))
+
+                    FunctionalFaqItems.forEachIndexed { index, faq ->
+                        val isOpen = expandedFaqIndex == index
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                                .clickable {
+                                    expandedFaqIndex = if (isOpen) -1 else index
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = faq.question,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    imageVector = if (isOpen) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                            AnimatedVisibility(visible = isOpen) {
+                                Text(
+                                    text = faq.answer,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun requestPinWidget(context: Context, provider: ComponentName) {
+    try {
+        val manager = AppWidgetManager.getInstance(context)
+        if (!manager.isRequestPinAppWidgetSupported) {
+            Toast.makeText(
+                context,
+                "Лаунчер не поддерживает автозакрепление. Добавь виджет через каталог виджетов рабочего стола.",
+                Toast.LENGTH_LONG
+            ).show()
+        } else {
+            val sent = manager.requestPinAppWidget(provider, null, null)
+            Toast.makeText(
+                context,
+                if (sent) {
+                    "Запрос отправлен лаунчеру. Подтверди добавление на экран."
+                } else {
+                    "Лаунчер отклонил запрос. Открой каталог виджетов рабочего стола."
+                },
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    } catch (e: Exception) {
+        Toast.makeText(
+            context,
+            "Ошибка закрепления: ${e.message ?: "неизвестная ошибка"}",
+            Toast.LENGTH_LONG
+        ).show()
     }
 }
 
@@ -1196,6 +1480,8 @@ fun ShiftRow(
     }
     val canDecrease = ShiftMath.canAdjustHours(shift, -1)
     val canIncrease = ShiftMath.canAdjustHours(shift, 1)
+    val extras = remember(shift.extrasJson, shift.payType) { ShiftMath.extraItems(shift) }
+    val extrasSum = remember(extras) { extras.sumOf { it.total } }
 
     NeonCard(
         modifier = Modifier
@@ -1207,7 +1493,7 @@ fun ShiftRow(
             Box(
                 Modifier
                     .width(4.dp)
-                    .height(48.dp)
+                    .height(50.dp)
                     .background(accent, RoundedCornerShape(4.dp))
             )
             Spacer(Modifier.width(10.dp))
@@ -1220,20 +1506,32 @@ fun ShiftRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (shift.isManual) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "ручн.",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (shift.isDaily) "дневная" else if (shift.isManual) "ручн." else "цикл",
+                        fontSize = 10.sp,
+                        color = if (shift.isDaily) palette.green else MaterialTheme.colorScheme.secondary
+                    )
                 }
                 Text(
                     text = "${ShiftMath.dateLabel(shift.startMillis)} · ${ShiftMath.timeRangeLabel(shift)}",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (shift.isDaily && extras.isNotEmpty()) {
+                    val extrasText = if (extras.size == 1 && extras.first().comment.isNotBlank()) {
+                        "${extras.first().comment}: ${ShiftMath.formatQuantity(extras.first().quantity)} × ${ShiftMath.formatCurrency(extras.first().unitPrice)} (+${ShiftMath.formatCurrency(extrasSum)})"
+                    } else {
+                        "Доп. заработок: ${extras.size} поз. (+${ShiftMath.formatCurrency(extrasSum)})"
+                    }
+                    Text(
+                        text = extrasText,
+                        fontSize = 11.sp,
+                        color = palette.green,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 if (badgeNote != null) {
                     Text(
                         text = badgeNote,
@@ -1241,7 +1539,7 @@ fun ShiftRow(
                         color = palette.cyan
                     )
                 }
-                if (onAdjustHours != null) {
+                if (!shift.isDaily && onAdjustHours != null) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -1276,7 +1574,7 @@ fun ShiftRow(
                     fontSize = 15.sp
                 )
                 Text(
-                    text = ShiftMath.formatHours(ShiftMath.hours(shift)),
+                    text = if (shift.isDaily) "1 день" else ShiftMath.formatHours(ShiftMath.hours(shift)),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.secondary
                 )
@@ -1285,7 +1583,7 @@ fun ShiftRow(
                         IconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
                             Icon(
                                 Icons.Rounded.Edit,
-                                contentDescription = "Редактировать смену",
+                                contentDescription = "Изменить смену",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp)
                             )

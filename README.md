@@ -1,45 +1,42 @@
 # Shift Cyber
 
-> Android-приложение для планирования сменного графика, учёта рабочего времени и расчёта заработка. Интерфейс — русский, валюта — рубли (₽).
+> Android-приложение для планирования сменного графика, учёта рабочего времени (почасовых и дневных смен с доп. выработкой), расчёта заработка и синхронизации через сервисы Google. Интерфейс — русский, валюта — рубли (₽).
 
-## 1. Назначение и статус реализации
+## 1. Назначение и статус реализации (v1.3.0 Release)
 
-**Shift Cyber** помогает вести сменный график (включая циклы вида «4 рабочих / 2 выходных»), вручную создавать и редактировать смены, учитывать фактически отработанные часы (включая ночные смены через полночь и на границе месяцев), рассчитывать доход в рублях, получать напоминания и отслеживать расписание через виджет рабочего стола Android.
+**Shift Cyber** помогает вести сменный график (включая циклы вида «4 рабочих / 2 выходных»), вручную создавать и редактировать **почасовые** и **дневные** смены, добавлять сдельную доп. оплату к дневным сменам, рассчитывать доход в рублях, синхронизировать расписание через **сервисы Google**, получать напоминания и отслеживать смену через два виджета рабочего стола Android.
 
-### Сводка реализованных возможностей (v1.2.0)
+### Сводка реализованных возможностей (v1.3.0)
 
 | Подсистема | Статус | Реализация в коде |
 |---|---|---|
-| Календарь смен (выбор дня, переключение месяцев, переход к «Сегодня», итоги дня и месяца) | Реализовано | `ui/Screens.kt` (`CalendarScreen`), `domain/ShiftMath.kt` |
-| Генератор циклов «N рабочих / M выходных» без ручных строковых шаблонов | Реализовано | `domain/CycleGenerator.kt` (`generateWorkRestCycle`), `ui/Dialogs.kt` (`CycleGeneratorDialog`) |
-| Защита от дубликатов при повторной генерации и защита ручных смен (`isManual = true`) без подтверждения | Реализовано | `domain/CycleGenerator.kt` (`resolveConflicts`, `ManualConflictPolicy`), `MainActivity.kt` (`db.withTransaction`) |
-| Ручное добавление, редактирование, удаление смен, выбор цветового акцента | Реализовано | `ui/Dialogs.kt` (`ShiftEditorDialog`), `ui/Screens.kt` (`ShiftRow`), `data/ShiftDao.kt` |
-| Быстрая корректировка длительности `−1 ч` / `+1 ч` с защитой от нулевой/отрицательной длительности | Реализовано | `domain/ShiftMath.kt` (`canAdjustHours`, `adjustDurationHours`), `ui/Screens.kt` |
-| Учёт времени и заработка в `₽` без вычета перерывов и без промежуточного округления | Реализовано | `domain/ShiftMath.kt` (`hours`, `earnings`, `formatCurrency`, `formatHours`) |
-| Корректный расчёт ночных смен через полночь и на границе суток/месяца/года | Реализовано | `domain/ShiftMath.kt` (`overlapMillis`, `calculatePeriodStats`, `isCrossMidnight`, `timeRangeLabel`) |
-| Статистика за месяц, выбранный день, произвольный период дат и за всё время | Реализовано | `ui/Screens.kt` (`StatsScreen`), `domain/ShiftMath.kt` |
-| Настройка почасовой ставки по умолчанию (с возможностью применить к будущим сменам) | Реализовано | `ui/Screens.kt` (`SettingsScreen`), `data/AppSettings.kt`, `data/SettingsDao.kt` |
-| Уведомления за 24 ч и за 1 ч до смены, настройка переключателей, отмена при удалении/редактировании | Реализовано | `notifications/ReminderScheduler.kt`, `notifications/ShiftReminderWorker.kt` |
-| Светлая и тёмная темы (Cyberpunk Neon / VKUI) с контрастной палитрой и сохранением между запусками | Реализовано | `ui/ShiftCyberTheme.kt`, `data/AppSettings.kt` |
-| Виджет рабочего стола Android (`RemoteViews` без несовместимых `<View>`, обновление из Room БД, `BOOT_COMPLETED`, адаптация к размеру, открытие по нажатию, закрепление на HyperOS) | Реализовано в коде (требует финальной проверки на физическом устройстве) | `widget/ShiftWidgetProvider.kt`, `widget/WidgetUpdater.kt`, `res/layout/shift_widget.xml`, `res/xml/shift_widget_info.xml` |
-| Модульные unit-тесты доменной логики и состояния виджета | Реализовано | `app/src/test/java/ru/shiftcyber/domain/*`, `app/src/test/java/ru/shiftcyber/widget/*` |
+| Два формата смен: **Почасовая** (`часы × ставка`) и **Дневная смена** (`1 день = фикс. сумма за день`) | Реализовано | `data/ShiftEntity.kt` (`ShiftPayType`), `domain/ShiftMath.kt`, `ui/Dialogs.kt`, `ui/Screens.kt` |
+| Блок доп. заработка дневной смены («Комментарий → сколько сделано → сумма за 1 действие») с суммированием в итог смены | Реализовано | `data/ShiftEntity.kt` (`ShiftExtraItem`), `domain/ShiftJsonCodec.kt`, `domain/ShiftMath.kt`, `ui/Dialogs.kt` |
+| Синхронизация через сервисы Google (Google Sign-In + Google Drive `appDataFolder` REST API, прямой экспорт/импорт JSON в Google Диск через SAF и системный Google Auto Backup) | Реализовано | `sync/GoogleDriveSyncManager.kt`, `res/xml/backup_rules.xml`, `res/xml/data_extraction_rules.xml`, `MainActivity.kt` |
+| Два виджета рабочего стола (`4×2` и `Мини 2×2`), `@string`-метки, `installLocation="internalOnly"`, `drawable-xhdpi` превью и `setWidgetPreview` (API 35) для каталога лаунчера (включая Xiaomi HyperOS) | Реализовано в коде (требует финальной проверки на физическом устройстве) | `widget/ShiftWidgetProvider.kt`, `widget/ShiftCompactWidgetProvider.kt`, `widget/SystemSyncReceiver.kt`, `widget/WidgetUpdater.kt` |
+| Фирменная иконка приложения (Adaptive Icon API 26+ и растровые `mipmap-mdpi..xxxhdpi`) | Реализовано | `res/mipmap-*/ic_launcher*.png`, `res/mipmap-anydpi-v26/ic_launcher*.xml`, `res/values/colors.xml` |
+| Календарь смен и генератор циклов «N рабочих / M выходных» (для почасовых и дневных смен) с защитой от дубликатов и защитой ручных смен | Реализовано | `domain/CycleGenerator.kt`, `ui/Dialogs.kt` (`CycleGeneratorDialog`), `ui/Screens.kt` (`CalendarScreen`) |
+| Статистика за месяц, выбранный день, произвольный период дат и за всё время (с учётом почасовых, ночных и дневных смен + доп. заработка) | Реализовано | `ui/Screens.kt` (`StatsScreen`), `domain/ShiftMath.kt` |
+| Раздел FAQ в «Настройках» по всем рабочим функциям приложения (взамен описания БД, без описания самого раздела настроек) | Реализовано | `ui/Screens.kt` (`FunctionalFaqItems`) |
+| Безопасная миграция БД Room `v1 → v2` (`MIGRATION_1_2`) без удаления пользовательских данных | Реализовано | `data/ShiftDatabase.kt` |
+| Подписанная Release-сборка (`isDebuggable = false`) и модульные unit-тесты (`testReleaseUnitTest`) | Реализовано | `app/build.gradle.kts`, `.github/workflows/android-apk.yml`, `app/src/test/java/ru/shiftcyber/**` |
 
 ---
 
 ## 2. Технологии и актуальная конфигурация
 
-Параметры сверены с текущими Gradle-файлами репозитория:
-
 - **Платформа:** Android (`minSdk = 26`, `compileSdk = 35`, `targetSdk = 35`)
-- **Application ID / Namespace:** `ru.shiftcyber` (`versionCode = 3`, `versionName = "1.2.0"`)
+- **Application ID / Namespace:** `ru.shiftcyber` (`versionCode = 4`, `versionName = "1.3.0"`)
+- **Режим сборки:** Release (`assembleRelease`, `isDebuggable = false`, V1 + V2 APK Signing)
 - **Язык и компилятор:** Kotlin `2.0.21`, JDK / JVM target `17`
 - **Gradle / AGP / KSP:** Gradle `8.11.1`, Android Gradle Plugin `8.9.2`, KSP `2.0.21-1.0.28`
 - **UI:** Jetpack Compose (`androidx.compose:compose-bom:2025.02.00`, Material 3, Material Icons Extended)
-- **Хранение данных:** Room `2.6.1` (`shift-cyber.db`, схема `version = 1`), Kotlin Coroutines & `Flow` (`collectAsState`)
+- **Хранение данных:** Room `2.6.1` (`shift-cyber.db`, схема `version = 2`, явная миграция `MIGRATION_1_2`)
+- **Сервисы Google:** `com.google.android.gms:play-services-auth:21.3.0` + HTTPS Google Drive API v3 (`appDataFolder`) + Android Storage Access Framework + Android Auto Backup
 - **Фоновые задачи и уведомления:** WorkManager `2.10.0` (`CoroutineWorker`), `NotificationCompat`
-- **Виджет:** `AppWidgetProvider` + `RemoteViews`
-- **Тестирование:** JUnit `4.13.2` (`testDebugUnitTest`)
-- **CI/CD:** GitHub Actions (`.github/workflows/android-apk.yml`) -> артефакт `ShiftCyber-debug-apk`
+- **Виджеты:** `AppWidgetProvider` (`ShiftWidgetProvider` 4×2 и `ShiftCompactWidgetProvider` 2×2) + `RemoteViews`
+- **Тестирование:** JUnit `4.13.2` (`testReleaseUnitTest`)
+- **CI/CD:** GitHub Actions (`.github/workflows/android-apk.yml`) → подписанный артефакт **`ShiftCyber-release-apk`**
 
 ---
 
@@ -50,43 +47,43 @@ app/src/
 ├── main/
 │   ├── AndroidManifest.xml
 │   ├── java/ru/shiftcyber/
-│   │   ├── MainActivity.kt                  # Точка входа, координация БД/уведомлений/виджета
+│   │   ├── MainActivity.kt                  # Точка входа, координация БД, Google Sync, SAF, уведомлений и виджетов
 │   │   ├── data/
-│   │   │   ├── AppSettings.kt               # Таблица app_settings (ставка, тема, уведомления, прозрачность виджета)
-│   │   │   ├── SettingsDao.kt               # DAO настроек (Flow + разовое чтение для фоновых задач)
-│   │   │   ├── ShiftDatabase.kt             # Room Database (shift-cyber.db, version = 1)
-│   │   │   ├── ShiftDao.kt                  # DAO смен (CRUD, выборка за период и пересечения)
-│   │   │   └── ShiftEntity.kt               # Таблица shifts (startMillis, endMillis, hourlyRate, isManual и др.)
+│   │   │   ├── AppSettings.kt               # Таблица app_settings (почасовая/дневная ставки, тема, Google Sync)
+│   │   │   ├── SettingsDao.kt               # DAO настроек
+│   │   │   ├── ShiftDatabase.kt             # Room Database (shift-cyber.db, v2 + MIGRATION_1_2)
+│   │   │   ├── ShiftDao.kt                  # DAO смен
+│   │   │   └── ShiftEntity.kt               # Таблица shifts + ShiftPayType (HOURLY/DAILY) + ShiftExtraItem
 │   │   ├── domain/
-│   │   │   ├── CycleGenerator.kt            # Генератор цикла N/M, защита от дубликатов и перезаписи ручных смен
-│   │   │   └── ShiftMath.kt                 # Единый доменный расчёт часов, заработка, границ периодов и форматирования
+│   │   │   ├── CycleGenerator.kt            # Генератор цикла N/M для почасовых и дневных смен
+│   │   │   ├── ShiftJsonCodec.kt            # JSON-сериализация доп. действий и полного снимка синхронизации
+│   │   │   └── ShiftMath.kt                 # Расчёт часов, дневных ставок, доп. выработки и статистики за период
 │   │   ├── notifications/
-│   │   │   ├── ReminderScheduler.kt         # Планирование/отмена уникальных задач WorkManager по ID смены
-│   │   │   └── ShiftReminderWorker.kt       # Показ уведомлений с проверкой актуальности смены в БД и разрешений
+│   │   │   ├── ReminderScheduler.kt         # Планирование/отмена уникальных задач WorkManager
+│   │   │   └── ShiftReminderWorker.kt       # Показ уведомлений за 24 ч и за 1 ч
+│   │   ├── sync/
+│   │   │   └── GoogleDriveSyncManager.kt    # Google Sign-In, Drive REST API (appDataFolder), SAF экспорт/импорт, Auto Backup
 │   │   ├── ui/
-│   │   │   ├── Dialogs.kt                   # Диалоги создания/редактирования смены и генератора цикла
-│   │   │   ├── Screens.kt                   # Экраны: Главная, Календарь, Статистика, Настройки
-│   │   │   └── ShiftCyberTheme.kt           # Цветовая система светлой и тёмной тем, управление системными барами
+│   │   │   ├── Dialogs.kt                   # Диалог смены (Почасовая / Дневная + доп. заработок) и генератора цикла
+│   │   │   ├── Screens.kt                   # Главная, Календарь, Статистика, Настройки (ставки, Google Sync, FAQ)
+│   │   │   └── ShiftCyberTheme.kt           # Светлая и тёмная темы Cyberpunk Neon / VKUI
 │   │   └── widget/
-│   │       ├── ShiftWidgetProvider.kt       # AppWidgetProvider (APPWIDGET_UPDATE, BOOT_COMPLETED, MY_PACKAGE_REPLACED)
-│   │       └── WidgetUpdater.kt             # Формирование состояния виджета из Room БД, кэш SharedPreferences и RemoteViews
+│   │       ├── ShiftWidgetProvider.kt       # Основной виджет 4×2
+│   │       ├── ShiftCompactWidgetProvider.kt# Компактный виджет Мини 2×2
+│   │       ├── SystemSyncReceiver.kt        # Системный ресивер BOOT_COMPLETED / MY_PACKAGE_REPLACED / TIME_SET
+│   │       └── WidgetUpdater.kt             # Обновление обоих виджетов из Room БД и публикация превью API 35
 │   └── res/
-│       ├── drawable/
-│       │   ├── widget_bg_glass.xml
-│       │   ├── widget_bg_solid.xml
-│       │   └── widget_bg_translucent.xml
-│       ├── drawable-nodpi/
-│       │   └── shift_widget_preview.png     # Оптимизированное превью виджета (480×480)
-│       ├── layout/
-│       │   └── shift_widget.xml             # Разметка виджета только на @RemoteView-элементах
-│       ├── values/
-│       │   ├── strings.xml
-│       │   └── styles.xml
-│       └── xml/
-│           └── shift_widget_info.xml        # Метаданные виджета (размеры, previewLayout, targetCellWidth/Height)
+│       ├── drawable/                        # Фоны виджетов (solid, translucent, glass)
+│       ├── drawable-xhdpi/                  # Превью виджетов для каталога лаунчера (480×280 и 260×260)
+│       ├── layout/                          # shift_widget.xml (4×2) и shift_widget_compact.xml (2×2)
+│       ├── mipmap-anydpi-v26/               # Adaptive иконки ic_launcher и ic_launcher_round
+│       ├── mipmap-mdpi..xxxhdpi/            # Растровые иконки приложения для всех плотностей экрана
+│       ├── values/                          # colors.xml, strings.xml, styles.xml
+│       └── xml/                             # shift_widget_info.xml, shift_widget_compact_info.xml, backup_rules.xml
 └── test/java/ru/shiftcyber/
     ├── domain/
     │   ├── CycleGeneratorTest.kt
+    │   ├── ShiftJsonCodecTest.kt
     │   └── ShiftMathTest.kt
     └── widget/
         └── WidgetStateTest.kt
@@ -94,47 +91,30 @@ app/src/
 
 ---
 
-## 4. Ключевые доменные правила и сохранность данных
+## 4. Ключевые решения в v1.3.0
 
-1. **Совместимость базы данных (Room v1):**
-   - Сохранены `applicationId = "ru.shiftcyber"`, имя БД `shift-cyber.db` и `version = 1` без destructive migrations.
-   - Поле `ShiftEntity.breakMinutes` оставлено в схеме таблицы `shifts` для полной совместимости при установке новой версии APK поверх ранее установленной, но **не вычитается** ни из часов, ни из заработка.
-2. **Учёт ночных смен и границ периодов:**
-   - Смена, в которой время окончания меньше времени начала (например, `20:00` → `08:00`), автоматически сохраняется с окончанием на следующие сутки (`+1 дн.`).
-   - В статистике за день, месяц и выбранный диапазон дат длительность и заработок рассчитываются по точному пересечению интервала смены с полуинтервалом `[fromMillis, toMillis)` без промежуточного округления.
-3. **Генератор циклического графика (`CycleGenerator`):**
-   - Поддерживает любой цикл «N рабочих / M выходных» (по умолчанию `4/2`), начиная строго с выбранной даты начала на заданное число дней вперёд.
-   - Повторный запуск с теми же параметрами не создаёт дубликатов.
-   - Ручные смены (`isManual = true`, включая смены, скорректированные кнопками `±1 ч` или через диалог редактирования) по умолчанию пропускаются и не перезаписываются; перезапись возможна только при включении соответствующего флага и повторном подтверждении в диалоге.
-   - Запись изменений в БД выполняется атомарно внутри `db.withTransaction`.
-4. **Виджет рабочего стола:**
-   - Причиной системной ошибки «Не удалось загрузить виджет» в промежуточной версии было использование тега `<View>` в `shift_widget.xml` (`android.view.View` не помечен аннотацией `@RemoteView` в Android SDK и вызывает `InflateException` в `RemoteViews`). Разделитель заменён на `@RemoteView`-совместимый `<FrameLayout>`, а превью уменьшено до `480×480` для стабильной работы каталога виджетов HyperOS / Android 14+.
-   - Виджет обновляется при запуске приложения, любых изменениях смен/настроек, по таймеру системы, после перезагрузки устройства (`BOOT_COMPLETED`) и после обновления APK (`MY_PACKAGE_REPLACED`), а по нажатию открывает приложение.
+1. **Каталог виджетов (включая Xiaomi HyperOS):**
+   - Добавлены `<application android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round">` и `android:installLocation="internalOnly"` (без них часть лаунчеров Android скрывает приложение из каталога виджетов).
+   - Системные события `BOOT_COMPLETED` / `TIME_SET` вынесены из `<receiver>` виджета в отдельный `SystemSyncReceiver`, а названия и описания переведены на строковые ресурсы `@string/...`.
+   - Снижены минимальные размеры (`180×96 dp` и `110×96 dp`) под экраны с крупным масштабом сетки и добавлен второй виджет **`Shift Cyber · Мини 2×2`**, благодаря чему на Xiaomi HyperOS приложение отображается сразу в основном списке **«Приложения с несколькими виджетами»**.
+2. **Почасовые и дневные смены + доп. заработок:**
+   - При создании/редактировании смены и в генераторе цикла доступен переключатель **«Почасовая»** / **«Дневная смена»**.
+   - Для дневной смены `1 день = фиксированная ставка за день + сумма всех позиций доп. заработка`, где каждая позиция содержит **комментарий**, **количество сделанных действий** и **сумму за 1 действие**.
+3. **Синхронизация через Google:**
+   - Поддержаны три совместимых механизма: системный **Google Auto Backup**, облачная синхронизация через **Google Sign-In + Google Drive `appDataFolder`** и прямое сохранение/восстановление JSON-файла в приложении **Google Диск** через системный диалог Android (работает сразу без настройки OAuth Client ID в Google Cloud).
+4. **Сохранность данных при обновлении:**
+   - Схема Room обновлена до `version = 2` через явную `MIGRATION_1_2` (`ALTER TABLE ... ADD COLUMN ... DEFAULT ...`) без потери ранее сохранённых смен и настроек.
 
 ---
 
-## 5. Сборка, тестирование и установка APK
+## 5. Сборка и установка Release APK
 
-### Через GitHub Actions (основной способ, без ПК)
+### Через GitHub Actions
 
-Workflow `.github/workflows/android-apk.yml` автоматически запускает модульные тесты (`gradle --no-daemon testDebugUnitTest`) и собирает отладочный APK (`gradle --no-daemon assembleDebug`).
+Workflow `.github/workflows/android-apk.yml` запускает модульные тесты Release-варианта (`testReleaseUnitTest`) и собирает подписанный Release APK (`assembleRelease`):
 
 1. Открой вкладку **Actions** в репозитории `iZvex/ShiftCyber` и выбери workflow **Build Shift Cyber APK**.
-2. Дождись зелёного статуса выполнения, открой завершённый запуск и скачай артефакт **`ShiftCyber-debug-apk`** (хранится 14 дней).
-3. Распакуй архив и установи `app-debug.apk` **поверх текущей версии приложения**, не удаляя старую — существующие смены и настройки сохранятся.
+2. Открой успешный запуск и скачай артефакт **`ShiftCyber-release-apk`**.
+3. Распакуй архив и установи `app-release.apk`.
 
-### Локальная сборка и тесты (опционально)
-
-Требуются JDK 17, Android SDK Platform 35 и Gradle 8.11.1:
-
-```bash
-gradle testDebugUnitTest assembleDebug
-```
-
-Готовый файл: `app/build/outputs/apk/debug/app-debug.apk`.
-
-### Диагностика виджета через `adb` (при необходимости на устройстве)
-
-```bash
-adb logcat -v time | grep -iE "AppWidget|RemoteViews|ShiftWidget|ru.shiftcyber"
-```
+> **Важно при переходе с Debug на Release:** в Android отладочный APK (`app-debug.apk`, подписанный тестовым debug-ключом) и релизный APK (`app-release.apk`, подписанный release-ключом) имеют разные цифровые подписи. При самом первом переходе с Debug-сборки на Release-сборку Android попросит удалить старую отладочную копию (предварительно можно сохранить график в Google Диск), а все последующие обновления `ShiftCyber-release-apk` будут устанавливаться поверх друг друга с сохранением базы данных.

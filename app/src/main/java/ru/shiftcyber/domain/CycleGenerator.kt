@@ -1,23 +1,17 @@
 package ru.shiftcyber.domain
 
 import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.data.ShiftPayType
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import kotlin.math.abs
 
-/**
- * Генератор циклического графика («N рабочих / M выходных» или произвольный цикл часов)
- * с защитой от дубликатов и сохранения ручных смен.
- */
 object CycleGenerator {
 
     enum class ManualConflictPolicy {
-        /** По умолчанию: сохранять ручные смены без изменений, пропуская конфликтующие авто-смены. */
         SKIP_CONFLICTS,
-
-        /** Перезаписывать конфликтующие ручные смены (только после явного подтверждения пользователя). */
         REPLACE_MANUAL
     }
 
@@ -31,21 +25,19 @@ object CycleGenerator {
         val replacedManualCount: Int
     )
 
-    /**
-     * Генерация цикла «N рабочих дней / M выходных» начиная с [periodStartDate] на [daysForward] дней.
-     * Индекс цикла отсчитывается от [anchorDate], что корректно работает при переходе месяцев, лет и часовых поясов.
-     */
     fun generateWorkRestCycle(
         anchorDate: LocalDate,
         daysForward: Int,
         workDays: Int,
         restDays: Int,
-        shiftDurationHours: Int,
-        startHour: Int,
+        shiftDurationHours: Int = 12,
+        startHour: Int = 9,
         startMinute: Int = 0,
-        hourlyRate: Double,
+        hourlyRate: Double = 0.0,
         title: String = "Рабочая смена",
         colorKey: String = "violet",
+        payType: String = ShiftPayType.HOURLY,
+        dayRate: Double = 0.0,
         periodStartDate: LocalDate = anchorDate,
         zoneId: ZoneId = ZoneId.systemDefault()
     ): List<ShiftEntity> {
@@ -54,7 +46,7 @@ object CycleGenerator {
         require(daysForward in 1..730) { "Горизонт планирования должен быть от 1 до 730 дней" }
         require(shiftDurationHours in 1..24) { "Длительность смены должна быть от 1 до 24 часов" }
         require(startHour in 0..23 && startMinute in 0..59) { "Некорректное время начала смены" }
-        require(hourlyRate >= 0.0) { "Ставка не может быть отрицательной" }
+        require(hourlyRate >= 0.0 && dayRate >= 0.0) { "Ставка не может быть отрицательной" }
 
         val pattern = List(workDays) { shiftDurationHours } + List(restDays) { 0 }
         val fromMillis = periodStartDate.atStartOfDay(zoneId).toInstant().toEpochMilli()
@@ -71,13 +63,12 @@ object CycleGenerator {
             title = title.ifBlank { "Рабочая смена" },
             startMinute = startMinute,
             colorKey = colorKey,
+            payType = payType,
+            dayRate = dayRate,
             zoneId = zoneId
         )
     }
 
-    /**
-     * Генерация смен по шаблону часов на день цикла (0 = выходной) в полуинтервале [fromMillis, toMillis).
-     */
     fun generate(
         anchorDateMillis: Long,
         fromMillis: Long,
@@ -88,11 +79,13 @@ object CycleGenerator {
         title: String = "Рабочая смена",
         startMinute: Int = 0,
         colorKey: String = "violet",
+        payType: String = ShiftPayType.HOURLY,
+        dayRate: Double = 0.0,
         zoneId: ZoneId = ZoneId.systemDefault()
     ): List<ShiftEntity> {
         require(cycleHours.isNotEmpty()) { "Цикл не должен быть пустым" }
         require(cycleHours.all { it in 0..24 }) { "Длительность должна быть от 0 до 24 часов" }
-        require(hourlyRate >= 0.0) { "Ставка не может быть отрицательной" }
+        require(hourlyRate >= 0.0 && dayRate >= 0.0) { "Ставка не может быть отрицательной" }
         if (toMillis <= fromMillis) return emptyList()
 
         val safeHour = startHour.coerceIn(0, 23)
@@ -121,7 +114,10 @@ object CycleGenerator {
                         title = title.ifBlank { "Рабочая смена" },
                         hourlyRate = hourlyRate,
                         colorKey = colorKey,
-                        isManual = false
+                        isManual = false,
+                        payType = payType,
+                        dayRate = dayRate,
+                        extrasJson = "[]"
                     )
                 }
             }
@@ -130,15 +126,6 @@ object CycleGenerator {
         return result
     }
 
-    /**
-     * Правила разрешения пересечений и дубликатов:
-     * 1. Две смены конфликтуют, если пересекаются по времени ИЛИ начинаются в одну локальную дату.
-     * 2. Ручные смены (isManual = true) при политике [ManualConflictPolicy.SKIP_CONFLICTS] никогда не удаляются
-     *    и не перезаписываются; конфликтующая авто-смена пропускается.
-     * 3. При повторном запуске с теми же параметрами идентичные авто-смены сохраняются без дублирования.
-     * 4. При [replaceAutoInWindow] = true устаревшие авто-смены внутри окна [windowStartMillis, windowEndMillis)
-     *    заменяются новым циклом.
-     */
     fun resolveConflicts(
         candidates: List<ShiftEntity>,
         existingShifts: List<ShiftEntity>,
@@ -258,6 +245,8 @@ object CycleGenerator {
         a.startMillis == b.startMillis &&
             a.endMillis == b.endMillis &&
             a.title == b.title &&
+            a.payType == b.payType &&
             abs(a.hourlyRate - b.hourlyRate) < 1e-6 &&
+            abs(a.dayRate - b.dayRate) < 1e-6 &&
             a.colorKey == b.colorKey
 }

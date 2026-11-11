@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.shiftcyber.data.ShiftEntity
+import ru.shiftcyber.data.ShiftPayType
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -46,6 +47,25 @@ class CycleGeneratorTest {
             generatedDates
         )
         assertTrue(generated.all { !it.isManual && ShiftMath.hours(it) == 12.0 })
+    }
+
+    @Test
+    fun `generates daily payType shifts with fixed dayRate`() {
+        val anchor = LocalDate.of(2026, 11, 10)
+        val generated = CycleGenerator.generateWorkRestCycle(
+            anchorDate = anchor,
+            daysForward = 6,
+            workDays = 2,
+            restDays = 2,
+            dayRate = 3200.0,
+            payType = ShiftPayType.DAILY,
+            title = "Дневная смена",
+            zoneId = moscowZone
+        )
+
+        // Nov 10, 11 work; 12, 13 rest; 14, 15 work -> 4 daily shifts
+        assertEquals(4, generated.size)
+        assertTrue(generated.all { it.payType == ShiftPayType.DAILY && ShiftMath.earnings(it) == 3200.0 })
     }
 
     @Test
@@ -112,7 +132,6 @@ class CycleGeneratorTest {
             zoneId = moscowZone
         )
 
-        // Manual custom shift on Nov 2
         val manualStart = LocalDate.of(2026, 11, 2).atTime(10, 0).atZone(moscowZone).toInstant().toEpochMilli()
         val manualShift = ShiftEntity(
             id = 99L,
@@ -158,7 +177,6 @@ class CycleGeneratorTest {
     @Test
     fun `dst transition zone keeps cycle alignment and exact shift duration`() {
         val berlinZone = ZoneId.of("Europe/Berlin")
-        // March 29, 2026 is spring-forward DST day in Europe/Berlin
         val anchor = LocalDate.of(2026, 3, 28)
         val generated = CycleGenerator.generateWorkRestCycle(
             anchorDate = anchor,
