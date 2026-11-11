@@ -3,6 +3,8 @@ name: Build Shift Cyber APK
 on:
   workflow_dispatch:
   push:
+    branches: [main, master, 'arena/**']
+  pull_request:
     branches: [main, master]
 
 permissions:
@@ -10,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -38,18 +40,69 @@ jobs:
             "build-tools;35.0.0" \
             "platform-tools"
 
+      - name: Cache release signing keystore
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.shiftcyber-signing
+          key: shiftcyber-release-keystore-v1
+
+      - name: Prepare release signing key
+        env:
+          SECRET_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SECRET_STORE_PASS: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SECRET_KEY_PASS: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          mkdir -p /home/runner/.shiftcyber-signing
+          KEYSTORE_FILE="/home/runner/.shiftcyber-signing/release.jks"
+          if [ -n "$SECRET_KEYSTORE_B64" ]; then
+            echo "$SECRET_KEYSTORE_B64" | base64 -d > "$KEYSTORE_FILE"
+            echo "SIGNING_KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+            echo "SIGNING_KEYSTORE_PASSWORD=$SECRET_STORE_PASS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=$SECRET_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=$SECRET_KEY_PASS" >> "$GITHUB_ENV"
+          else
+            if [ ! -f "$KEYSTORE_FILE" ]; then
+              keytool -genkeypair -v \
+                -keystore "$KEYSTORE_FILE" \
+                -alias shiftcyber \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -storepass shiftcyber2026 \
+                -keypass shiftcyber2026 \
+                -dname "CN=Shift Cyber, OU=Mobile, O=ShiftCyber, L=Moscow, S=Moscow, C=RU"
+            fi
+            echo "SIGNING_KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+            echo "SIGNING_KEYSTORE_PASSWORD=shiftcyber2026" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=shiftcyber" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=shiftcyber2026" >> "$GITHUB_ENV"
+          fi
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Run unit tests and build signed Release APK
+        env:
+          APPODEAL_APP_KEY: ${{ secrets.APPODEAL_APP_KEY }}
+          YOOKASSA_PAYMENT_URL: ${{ secrets.YOOKASSA_PAYMENT_URL }}
+          YOOKASSA_SHOP_ID: ${{ secrets.YOOKASSA_SHOP_ID }}
+          YOOKASSA_SECRET_KEY: ${{ secrets.YOOKASSA_SECRET_KEY }}
+        run: |
+          set -o pipefail
+          if ! gradle --no-daemon testReleaseUnitTest assembleRelease 2>&1 | tee /tmp/gradle-build.log; then
+            WRONG=$(awk '/\* What went wrong:/,/\* Try:/' /tmp/gradle-build.log | head -n 35 | tr '\n' ' ')
+            DETAILS=$(grep -E "(^e: |Error:|FAILURE:|FAILED|Exception|at ru\.shiftcyber)" /tmp/gradle-build.log | tail -n 25 | tr '\n' ' ')
+            echo "::error title=GradleBuildError::${WRONG} || ${DETAILS}"
+            exit 1
+          fi
 
-      - name: Upload APK
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ShiftCyber-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ShiftCyber-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14

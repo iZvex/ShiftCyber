@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">Shift Cyber</string>
-    <string name="widget_description">Календарь смен Shift Cyber</string>
+    <string name="widget_full_label">Shift Cyber — Расписание</string>
+    <string name="widget_description">Текущая и следующая смена, часы и заработок в рублях</string>
+    <string name="widget_compact_label">Shift Cyber — Мини</string>
+    <string name="widget_compact_description">Компактный виджет ближайшей смены и дохода</string>
 </resources>

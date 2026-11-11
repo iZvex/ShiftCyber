@@ -10,5 +10,9 @@ data class AppSettings(
     val darkTheme: Boolean = true,
     val notifyDayBefore: Boolean = true,
     val notifySameDay: Boolean = true,
-    val widgetTransparency: Int = 88
+    val widgetTransparency: Int = 88,
+    val dailyRate: Double = 2500.0,
+    val autoGoogleSync: Boolean = false,
+    val lastSyncMillis: Long = 0L,
+    val googleAccountEmail: String = ""
 )

@@ -3,8 +3,12 @@ package ru.shiftcyber.widget
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
-import android.widget.RemoteViews
-import ru.shiftcyber.R
+import android.os.Bundle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class ShiftWidgetProvider : AppWidgetProvider() {
 
@@ -13,36 +17,37 @@ class ShiftWidgetProvider : AppWidgetProvider() {
         manager: AppWidgetManager,
         ids: IntArray
     ) {
-        val prefs = context.getSharedPreferences(
-            "shift_widget",
-            Context.MODE_PRIVATE
-        )
+        WidgetUpdater.renderCached(context, targetFullIds = ids)
+        val pendingResult = goAsync()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                withTimeoutOrNull(4_500L) {
+                    WidgetUpdater.refreshFromDatabase(context, targetFullIds = ids)
+                }
+            } finally {
+                pendingResult.finish()
+            }
+        }
+    }
 
-        ids.forEach { id ->
-            val views = RemoteViews(context.packageName, R.layout.shift_widget)
-
-            views.setTextViewText(
-                R.id.widget_status,
-                prefs.getString("status", "Твой график под контролем")
-            )
-            views.setTextViewText(
-                R.id.widget_details,
-                prefs.getString("details", "Открой приложение, чтобы добавить смены")
-            )
-            views.setTextViewText(
-                R.id.widget_hours,
-                prefs.getString("hours", "—")
-            )
-            views.setTextViewText(
-                R.id.widget_earnings,
-                prefs.getString("earnings", "— ₽")
-            )
-            views.setTextViewText(
-                R.id.widget_next,
-                prefs.getString("next", "Следующая смена: —")
-            )
-
-            manager.updateAppWidget(id, views)
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: Bundle
+    ) {
+        super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
+        val target = intArrayOf(appWidgetId)
+        WidgetUpdater.renderCached(context, targetFullIds = target)
+        val pendingResult = goAsync()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                withTimeoutOrNull(4_000L) {
+                    WidgetUpdater.refreshFromDatabase(context, targetFullIds = target)
+                }
+            } finally {
+                pendingResult.finish()
+            }
         }
     }
 }
