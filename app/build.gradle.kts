@@ -103,35 +103,15 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // Appodeal Mediation SDK 3.5.0.+ и адаптеры для РФ: Яндекс РСЯ, VK Реклама (myTarget), Start.io
-    implementation("com.appodeal.ads:sdk:3.5.0.+") {
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "admob")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "notsy")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "meta")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "facebook")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "applovin")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "applovin_max")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "ironsource")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "level_play")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "unity_ads")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "vungle")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "inmobi")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "mintegral")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "bigo_ads")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "dt_exchange")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "pangle")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "amazon")
-        exclude(group = "com.appodeal.ads.sdk.networks", module = "mobilefuse")
-        exclude(group = "com.appodeal.ads.sdk.services", module = "appsflyer")
-        exclude(group = "com.appodeal.ads.sdk.services", module = "adjust")
-        exclude(group = "com.appodeal.ads.sdk.services", module = "firebase")
-        exclude(group = "com.appodeal.ads.sdk.services", module = "facebook_analytics")
+    // Appodeal Mediation SDK 3.5.0 Core + адаптеры для РФ: Яндекс РСЯ, VK Реклама (myTarget), IAB и Start.io
+    implementation("com.appodeal.ads.sdk:core:3.5.0") {
         exclude(group = "com.android.billingclient", module = "billing")
     }
-    implementation("com.appodeal.ads.sdk.networks:yandex:3.5.0.+") {
+    implementation("com.appodeal.ads.sdk.networks:iab:3.5.0.0")
+    implementation("com.appodeal.ads.sdk.networks:yandex:3.5.0.0") {
         exclude(group = "com.android.billingclient", module = "billing")
     }
-    implementation("com.appodeal.ads.sdk.networks:my_target:3.5.0.+") {
+    implementation("com.appodeal.ads.sdk.networks:my_target:3.5.0.0") {
         exclude(group = "com.android.billingclient", module = "billing")
     }
     implementation("com.startapp:inapp-sdk:5.0.2")

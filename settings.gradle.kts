@@ -11,6 +11,7 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url = uri("https://artifactory.appodeal.com/appodeal") }
+        maven { url = uri("https://artifactory.bidmachine.io/bidmachine") }
         maven { url = uri("https://artifactory.bidon.org/bidon") }
     }
 }

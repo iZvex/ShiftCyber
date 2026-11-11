@@ -93,8 +93,9 @@ jobs:
         run: |
           set -o pipefail
           if ! gradle --no-daemon testReleaseUnitTest assembleRelease 2>&1 | tee /tmp/gradle-build.log; then
-            DETAILS=$(grep -E "(^e: |Error:|FAILURE:|FAILED|> Task|Exception|at ru\.shiftcyber)" /tmp/gradle-build.log | tail -n 30 | tr '\n' ' ')
-            echo "::error title=GradleBuildError::${DETAILS}"
+            WRONG=$(awk '/\* What went wrong:/,/\* Try:/' /tmp/gradle-build.log | head -n 35 | tr '\n' ' ')
+            DETAILS=$(grep -E "(^e: |Error:|FAILURE:|FAILED|Exception|at ru\.shiftcyber)" /tmp/gradle-build.log | tail -n 25 | tr '\n' ' ')
+            echo "::error title=GradleBuildError::${WRONG} || ${DETAILS}"
             exit 1
           fi
 
